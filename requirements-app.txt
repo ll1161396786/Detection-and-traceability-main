@@ -1,0 +1,3 @@
+# Install the hardware-compatible torch/torchvision pair FIRST.
+# This entry selects application dependencies, with no CUDA build pin.
+-r deploy/requirements-common.txt

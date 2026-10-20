@@ -1,0 +1,7 @@
+# Generic scaffold. Choose torch/torchvision and CUDA after activation.
+name: airport-detective
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip

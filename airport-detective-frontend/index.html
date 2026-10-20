@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>自动驾驶机场接驳车安全风险智能识别系统</title>
+    <meta
+      name="description"
+      content="遗留物检测、风险研判、原持有人回溯与处置闭环演示"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./live-monitor.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <h1>自动驾驶机场接驳车安全风险智能识别系统</h1>
+        </div>
+        <div class="topbar-actions" aria-label="检测操作">
+          <label class="model-choice" for="modelSelector">检测模型
+            <select id="modelSelector" title="停止检测后可切换模型，点击左下角启动检测后生效">
+              <option value="yolov10n.pt">YOLOv10n · Nano</option>
+              <option value="yolov10s.pt">YOLOv10s · Small</option>
+              <option value="yolov10m.pt">YOLOv10m · Medium</option>
+              <option value="yolov10b.pt">YOLOv10b · Base</option>
+              <option value="yolov10l.pt">YOLOv10l · Large</option>
+              <option value="yolov10x.pt">YOLOv10x · XLarge</option>
+            </select>
+          </label>
+          <button id="clearCacheButton" type="button" title="停止接驳车 04 四路检测并删除当前任务的存档照片">清除缓存</button>
+        </div>
+      </header>
+
+      <!-- 主体：左侧四路视频田字格 + 右侧安全分析面板 -->
+      <main class="workspace">
+        <!-- 左列：视频田字格 + 车次列表 -->
+        <div class="left-rail">
+          <!-- 视频监控容器：左侧接驳车三视图，右侧四路监控田字格 -->
+          <section class="video-wall" aria-label="视频源">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Video Wall</p>
+                <h2>车厢实时监控 · 四路摄像头</h2>
+              </div>
+              <span class="wall-status" id="wallStatus">4/4 在线</span>
+            </div>
+            <!-- 新加坡樟宜机场接驳车班次（车次按接驳航班编排，非高铁车次） -->
+            <div class="train-bar" aria-label="当前接驳车次">
+              <div class="train-preview">
+                <span
+                  class="train-no"
+                  id="trainNo"
+                  title="悬停查看接驳车三视图"
+                >樟宜机场接驳车 05</span>
+                <!-- 仅在悬停蓝色接驳车名称时显示，顺序为正 / 侧 / 后 -->
+                <div class="view-stack" id="shuttleViews" aria-label="接驳车三视图">
+                  <div class="view-item">
+                    <img
+                      class="view-image"
+                      src="./public/media/shuttle/views/front.jpg"
+                      width="800"
+                      height="600"
+                      alt="接驳车正视图"
+                    />
+                    <span class="view-caption">正视 · Front</span>
+                  </div>
+                  <div class="view-item">
+                    <img
+                      class="view-image"
+                      src="./public/media/shuttle/views/side.jpg"
+                      width="800"
+                      height="600"
+                      alt="接驳车侧视图"
+                    />
+                    <span class="view-caption">侧视 · Side</span>
+                  </div>
+                  <div class="view-item">
+                    <img
+                      class="view-image"
+                      src="./public/media/shuttle/views/rear.jpg"
+                      width="800"
+                      height="600"
+                      alt="接驳车后视图"
+                    />
+                    <span class="view-caption">后视 · Rear</span>
+                  </div>
+                </div>
+              </div>
+              <span class="train-meta" id="trainMeta">接驳航班 SQ 12 · 07:50 发车</span>
+              <span class="train-route" id="trainRoute">樟宜机场 T1 → T3 航站楼（SIN）</span>
+            </div>
+            <div class="video-content">
+              <div class="video-grid" id="videoGrid"></div>
+              <figure class="shuttle-map-card" aria-label="接驳车位置示意图">
+                <img
+                  class="shuttle-map-image"
+                  src="./public/media/shuttle/changi-reference-route-map.png"
+                  width="1084"
+                  height="1451"
+                  alt="樟宜机场行政地图接驳路线示意图，接驳车 05 位于机场中央区域"
+                />
+                <figcaption class="shuttle-map-caption">
+                  <span class="map-caption-dot" aria-hidden="true"></span>
+                  车辆位置示意
+                </figcaption>
+              </figure>
+            </div>
+          </section>
+
+          <!-- 车次列表（位于四路摄像头模块下方，点击车次联动视频墙与遗留物清单） -->
+          <section class="col trip-panel" aria-label="车次列表">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Departure Board</p>
+                <h2>车次列表</h2>
+              </div>
+              <span class="wall-status muted" id="tripCount"></span>
+            </div>
+            <div class="trip-head" aria-hidden="true">
+              <span>车次 · 接驳航班 / 线路</span>
+              <span>风险值</span>
+              <span>风险雷达</span>
+              <span>遗留物</span>
+              <span>发车时间</span>
+              <span>车次状态</span>
+              <span>遗留物判定</span>
+            </div>
+            <div class="trip-list" id="tripList"></div>
+          </section>
+        </div>
+
+        <!-- 右侧安全分析面板：常见危险物 / 遗留物清单 / 异常行为分析 -->
+        <aside class="right-rail" aria-label="安全分析面板">
+          <!-- 危险物品与常见行李资料库（上，两条横向目录） -->
+          <section class="col hazard-panel" aria-label="危险物品与常见行李库">
+            <div class="catalog-row catalog-row-hazard">
+              <div class="catalog-label">
+                <p class="eyebrow">Hazard Items</p>
+                <h2>危险物品库</h2>
+                <span class="catalog-count" id="hazardCount"></span>
+              </div>
+              <div class="catalog-track" id="hazardGrid" role="list" tabindex="0" aria-label="危险物品图片列表"></div>
+            </div>
+            <div class="catalog-row catalog-row-luggage">
+              <div class="catalog-label">
+                <p class="eyebrow">Common Luggage</p>
+                <h2>常见行李库</h2>
+                <span class="catalog-count" id="luggageCount"></span>
+              </div>
+              <div class="catalog-track" id="luggageGrid" role="list" tabindex="0" aria-label="常见行李图片列表"></div>
+            </div>
+          </section>
+
+          <!-- 遗留物清单 + 可能所属人（中） -->
+          <section class="col items-panel" aria-label="遗留物清单">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Items & Owners</p>
+                <h2>遗留物 · 所属人</h2>
+              </div>
+              <span class="wall-status muted" id="itemCount"></span>
+            </div>
+            <div class="list-header" aria-hidden="true">
+              <span>遗留物品 / 风险信息</span>
+              <span>可能所属人 · 按置信度排序，最多 3 名</span>
+            </div>
+            <div class="item-list" id="itemList"></div>
+          </section>
+
+          <!-- 异常行为分析（下） -->
+          <section class="col behavior-panel" aria-label="异常行为分析">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Behavior Analysis</p>
+                <h2>异常行为分析</h2>
+              </div>
+              <span class="wall-status muted" id="behaviorCount"></span>
+            </div>
+            <div class="behavior-list" id="behaviorList"></div>
+          </section>
+        </aside>
+      </main>
+
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    </div>
+
+    <script src="./live-client.js" defer></script>
+    <script src="./app.js" defer></script>
+  </body>
+</html>

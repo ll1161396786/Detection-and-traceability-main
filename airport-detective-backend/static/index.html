@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="YOLOv10 车厢遗留物检测与所属人关联演示">
+  <title>RailGuard · 遗留物智能研判</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/archive.css">
+  <link rel="stylesheet" href="/static/backend.css">
+  <style>body{overflow-x:hidden}</style>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">RG</span><div><strong>RailGuard</strong><small>车厢遗留物智能研判</small></div></div>
+      <div class="system-state"><span><i id="connectionDot"></i><b id="connection">正在连接本地引擎</b></span><small id="deviceName">—</small></div>
+      <div class="clock"><span id="clock">--:--:--</span><small>LOCAL TIME · SG</small></div>
+    </header>
+
+    <main class="dashboard">
+      <aside class="left-column">
+        <section class="train-card">
+          <div class="section-kicker">CURRENT SERVICE / 当前车次</div>
+          <div class="train-main"><input id="trainNumber" value="DT-0421" maxlength="40" aria-label="当前车次"><span class="service-pill">运营中</span></div>
+          <div class="train-route"><input id="trainRoute" value="Downtown Line" maxlength="40" aria-label="线路"><span>→</span><input id="carriage" value="Car 03" maxlength="40" aria-label="车厢"></div>
+          <div class="train-meta"><span>监控点位</span><input id="camera" value="CAM-07" maxlength="40" aria-label="监控点位"></div>
+        </section>
+
+        <section class="panel source-panel">
+          <div class="panel-heading"><div><span>01</span><h2>视频与实时检测</h2></div><small>LIVE INPUT</small></div>
+          <label class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="导入视频">
+            <input type="file" id="fileInput" accept=".mp4,.mov,.avi,.mkv,.webm,.m4v" hidden>
+            <span class="upload-symbol">＋</span><span><b id="uploadTitle">导入车厢视频</b><small id="uploadHint">点击选择或拖入 · 最大 2 GB</small></span>
+          </label>
+          <div class="upload-progress" id="uploadProgress" hidden><progress id="uploadBar" max="100" value="0"></progress><span id="uploadPercent">0%</span></div>
+          <div class="library-row"><select id="library" aria-label="本地视频"><option value="">从 videos 文件夹选择…</option></select><button id="refreshLibrary" title="刷新本地视频">↻</button></div>
+          <div id="fileMeta" class="file-meta">等待视频输入</div>
+
+          <div class="viewer" id="viewer">
+            <div class="viewer-empty" id="empty"><span>◎</span><b>等待视频信号</b><small>导入视频后可预览并开始检测</small></div>
+            <video id="sourceVideo" controls muted playsinline hidden></video>
+            <img id="livePreview" alt="YOLOv10 实时检测画面" hidden>
+            <video id="resultVideo" controls muted playsinline hidden></video>
+            <div class="viewer-hud" id="hud" hidden><span><i></i>AI ANALYSIS</span><b id="videoTime">00:00 / 00:00</b></div>
+            <div class="camera-tag"><span id="cameraTag">CAM-07</span><small id="trainTag">DT-0421 · CAR 03</small></div>
+          </div>
+
+          <div class="status-line"><span id="statusText" role="status" aria-live="polite">等待选择视频</span><b id="progressText">0%</b></div>
+          <progress id="jobProgress" max="100" value="0"></progress>
+          <div class="live-metrics"><span><small>帧</small><b id="processed">—</b></span><span><small>目标</small><b id="currentCount">—</b></span><span><small>推理 FPS</small><b id="inferenceFps">—</b></span></div>
+
+          <details class="settings"><summary>检测参数 <span>展开设置</span></summary>
+            <div class="form-grid">
+              <label>模型<select id="model"><option value="yolov10n.pt">YOLOv10n</option></select></label>
+              <label>设备<select id="device"><option value="auto">自动 / GPU</option><option value="cpu">CPU</option><option value="0" id="gpuOption">GPU · CUDA</option></select></label>
+              <label>识别范围<select id="scope"><option value="all">全部 COCO 类别</option><option value="luggage">人员与行李</option></select></label>
+              <label>输入尺寸<select id="imgsz"><option value="320">320</option><option value="640" selected>640</option><option value="960">960</option></select></label>
+              <label>分析密度<select id="stride"><option value="1">每帧</option><option value="2">每 2 帧</option><option value="5">每 5 帧</option><option value="10">每 10 帧</option></select></label>
+              <label>静止阈值<select id="lingerSeconds"><option value="2">2 秒 · 演示</option><option value="5">5 秒</option><option value="10">10 秒</option><option value="30">30 秒</option><option value="60">60 秒</option></select></label>
+            </div>
+            <label class="range-field"><span>置信度阈值 <output id="confidenceValue">0.25</output></span><input id="confidence" type="range" min="0.05" max="0.95" step="0.05" value="0.25"></label>
+          </details>
+          <button class="primary" id="start" disabled><span>▶</span> 开始智能研判</button>
+          <button class="danger-button" id="stop" hidden>■ 停止任务</button>
+          <button class="danger-button" id="deletePhotos" hidden>删除存档照片</button>
+        </section>
+      </aside>
+
+      <section class="center-column">
+        <section class="overview">
+          <div class="warning-metrics"><button id="confirmedMetric" class="warning-metric confirmed" aria-expanded="false" aria-controls="warningGallery"><small>确认遗留</small><strong id="confirmedCount">0</strong><span>人工确认 · 点击查看</span></button><button id="suspectedMetric" class="warning-metric suspected" aria-expanded="false" aria-controls="warningGallery"><small>疑似遗留</small><strong id="suspectedCount">0</strong><span>累计去重 · 点击查看</span></button></div>
+          <div><small>行李候选</small><strong id="candidateCount">0</strong><span class="trend">跨帧跟踪</span></div>
+          <div><small>关联人员</small><strong id="ownerCount">0</strong><span class="trend">距离与共现</span></div>
+          <div><small>分析进度</small><strong id="overviewProgress">0%</strong><span class="trend" id="elapsed">耗时 —</span></div>
+        </section>
+
+        <section id="warningGallery" class="panel warning-gallery" hidden aria-label="遗留物预警图片">
+          <div class="panel-heading"><div><h2 id="warningGalleryTitle">疑似遗留</h2></div><button id="closeWarnings" class="text-button">收起</button></div>
+          <p class="warning-note">点击包裹图片定位到下方证据档案；核实后可确认遗留。</p>
+          <div id="warningImages" class="warning-images"></div>
+        </section>
+
+        <section class="alert-banner" id="alertBanner">
+          <div class="pulse-icon"><span></span></div>
+          <div><b id="alertTitle">系统待命</b><p id="alertDescription">导入车厢视频，系统将持续跟踪人员与行李的空间关系。</p></div>
+          <span class="analysis-badge" id="statusBadge">等待输入</span>
+        </section>
+
+        <section class="panel candidates-panel">
+          <div class="panel-heading"><div><span>02</span><h2>检测到的遗留物</h2></div><small>UNATTENDED OBJECTS</small></div>
+          <div class="legend"><span><i class="dot high"></i>疑似遗留</span><span><i class="dot medium"></i>持续观察</span><span><i class="dot low"></i>随身携带</span></div>
+          <div id="candidateList" class="candidate-list">
+            <div class="empty-state"><span>⌁</span><h3>尚未发现行李候选</h3><p>模型检测到背包、手提包或行李箱后，将在这里建立跨帧记录。</p></div>
+          </div>
+        </section>
+
+        <section class="panel event-panel">
+          <div class="panel-heading"><div><span>03</span><h2>研判时间线</h2></div><small id="frameInfo">检测框来自真实模型输出</small></div>
+          <div id="eventTimeline" class="event-timeline"><div class="timeline-empty">等待检测事件</div></div>
+        </section>
+      </section>
+
+      <aside class="right-column">
+        <section class="panel owner-panel">
+          <div class="panel-heading"><div><span>04</span><h2>可能所属人</h2></div><small>OWNER ASSOCIATION</small></div>
+          <div id="selectedObject" class="selected-object"><span>未选择遗留物</span><small>选择中栏候选后查看关联结果</small></div>
+          <div id="ownerHero" class="owner-hero empty-owner">
+            <div class="person-silhouette">♙</div><b>等待关联分析</b><p>系统会根据人与行李的距离、共同出现时长和当前是否仍在画面中计算演示性关联分数。</p>
+          </div>
+          <div id="ownerList" class="owner-list"></div>
+        </section>
+
+      </aside>
+    </main>
+
+    <section class="panel evidence-archive" id="evidenceArchive">
+      <div class="archive-heading">
+        <div>
+          <span class="archive-index">05</span>
+          <div><h2>包裹证据档案</h2><p>按包裹编号持续归档检测截图、可能所属人及关联概率</p></div>
+        </div>
+        <div class="archive-actions"><span class="archive-counter" id="archiveCount">0 条记录</span><span class="archive-status" id="archiveStatus">等待检测结果</span></div>
+      </div>
+      <div class="archive-table" role="table" aria-label="包裹证据档案">
+        <div class="archive-table-head" role="row">
+          <span role="columnheader">包裹记录</span>
+          <span role="columnheader">检测信息</span>
+          <span role="columnheader">研判状态</span>
+          <span role="columnheader">可能所属人 / 关联概率</span>
+        </div>
+        <div id="archiveRows" class="archive-rows" role="rowgroup">
+          <div class="archive-empty-row"><span>▣</span><div><b>暂无归档记录</b><small>开始检测后，识别到的包裹会固定保存在此处</small></div></div>
+        </div>
+      </div>
+      <div class="archive-footnote"><span><i></i>停止检测后保留本地档案与照片</span><span>点击“删除存档照片”后才清理照片</span></div>
+    </section>
+
+    <footer><span>YOLOv10 目标检测 + 本地跨帧启发式关联</span><span id="footerStatus">数据仅在本机处理</span></footer>
+  </div>
+  <div class="toast" id="toast" role="alert" hidden></div>
+</body>
+</html>

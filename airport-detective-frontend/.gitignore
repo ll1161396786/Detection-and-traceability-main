@@ -1,0 +1,5 @@
+dist/
+output/
+.playwright-cli/
+.workbuddy/
+node_modules/

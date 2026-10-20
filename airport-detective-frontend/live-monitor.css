@@ -1,0 +1,45 @@
+.live-frame[hidden], .live-frame-message[hidden] { display: none; }
+.item-thumb, .owner-avatar { cursor: zoom-in; }
+.item-thumb:focus-visible, .owner-avatar:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+.item-photo-dialog { width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); box-sizing: border-box; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2, #151d22); color: var(--text); box-shadow: 0 20px 70px #0008; }
+.item-photo-dialog::backdrop { background: #0009; }
+.item-photo-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.item-photo-heading button { flex-shrink: 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+.item-photo-content { display: grid; place-items: center; min-height: 120px; background: #080d0b; border-radius: 6px; overflow: hidden; }
+.item-photo-content img { display: block; max-width: 100%; max-height: calc(100dvh - 130px); width: 100%; height: auto; object-fit: contain; }
+.item-photo-content [hidden] { display: none; }
+.item-photo-content p { padding: 24px; text-align: center; color: var(--muted); }
+.topbar-actions { grid-column: 3; justify-self: end; display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.topbar-actions button { color: var(--text); background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 9px 14px; font-size: 13px; cursor: pointer; }
+.topbar-actions button:hover:not(:disabled) { border-color: var(--cyan); }
+.topbar-actions button:disabled { opacity: .5; cursor: default; }
+.model-choice { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.model-choice select { max-width: 185px; padding: 9px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--text); font: inherit; }
+.model-choice select:disabled { opacity: .65; cursor: not-allowed; }
+.live-frame { object-fit: contain; background: #080d0b; }
+.live-frame-message { position: absolute; inset: 0; display: grid; place-content: center; color: var(--muted); padding: 24px; text-align: center; }
+.live-controls { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 11px; color: var(--muted); }
+.live-controls button, .live-confirm { border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); padding: 5px 8px; cursor: pointer; font-size: 11px; }
+.live-controls button:disabled, .live-confirm:disabled { opacity: .5; cursor: default; }
+.live-controls span { margin-left: auto; }
+.item-row.suspected { border-left: 3px solid var(--amber); }
+.item-row.danger { border-left: 3px solid var(--red); }
+.row-flag.suspected, .trip-tag.suspected { color: var(--amber); background: rgba(255, 200, 87, .14); }
+.live-confirm { margin-top: 6px; color: var(--amber); }
+.danger .live-confirm { color: var(--red); }
+.live-empty { padding: 24px; color: var(--muted); text-align: center; }
+.live-empty-owner, .live-reason { color: var(--muted); font-size: 11px; margin: 5px 0; }
+.live-reason { max-width: 210px; }
+.item-row[data-live-key] { grid-template-columns: minmax(210px, 1fr) minmax(0, 1.15fr); gap: 12px; padding: 8px; }
+.item-row[data-live-key] .item-identity { grid-template-columns: 64px minmax(0, 1fr); gap: 8px; }
+.item-row[data-live-key] .item-title { flex-wrap: wrap; gap: 3px; }
+.item-row[data-live-key] .item-title strong { font-size: 12px; }
+.item-row[data-live-key] .owner-card { grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 3px; padding: 4px; }
+.item-row[data-live-key] .owner-avatar { width: 42px; }
+.item-row[data-live-key] .owner-body { width: 100%; }
+.item-row[data-live-key] .owner-name { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 9px; }
+.item-row[data-live-key] .owner-top { gap: 3px; font-size: 10px; }
+.item-row[data-live-key] .owner-list { gap: 5px; }
+.item-row[data-live-key] .live-reason { margin: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 700px) { .item-row[data-live-key] { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 900px) { .topbar-actions { grid-column: 1; justify-self: center; } }

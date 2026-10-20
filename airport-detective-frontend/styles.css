@@ -1,0 +1,1545 @@
+:root {
+  color-scheme: dark;
+  --bg: #101413;
+  --surface: #171d1b;
+  --surface-2: #202724;
+  --line: rgba(255, 255, 255, 0.12);
+  --text: #f2f6f0;
+  --muted: #a8b3ad;
+  --green: #72d897;
+  --cyan: #78d8ff;
+  --amber: #ffc857;
+  --red: #ff6b6b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top left, rgba(114, 216, 151, 0.16), transparent 32rem),
+    linear-gradient(135deg, #0d1110 0%, #151a18 48%, #111719 100%);
+  color: var(--text);
+  font-family:
+    "Microsoft YaHei",
+    "PingFang SC",
+    "Segoe UI",
+    Arial,
+    sans-serif;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 0;
+  font-size: clamp(20px, 2vw, 30px);
+  line-height: 1.05;
+}
+
+h2 {
+  margin-bottom: 0;
+  font-size: 17px;
+  line-height: 1.2;
+}
+
+h3 {
+  margin-bottom: 5px;
+  font-size: 14px;
+}
+
+/* ===== 总布局：顶栏 + 主区域 ===== */
+.app-shell {
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  margin: 0;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    "topbar"
+    "main";
+  gap: 10px;
+  overflow: hidden;
+}
+
+/* 顶栏：三列栅格（空列 | 标题 | 案件号），标题在整行正中，不受右侧状态块宽度影响 */
+.topbar {
+  grid-area: topbar;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  min-height: 52px;
+  padding: 0;
+}
+
+.brand {
+  grid-column: 2;
+  min-width: 0;
+  text-align: center;
+}
+
+.topbar-status {
+  grid-column: 3;
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+#topbarCaseId {
+  color: var(--text);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+/* ===== 主体：左侧田字格视频墙 + 右侧安全分析面板 ===== */
+.workspace {
+  grid-area: main;
+  display: grid;
+  /* 左列（视频墙 + 车次列表）略窄于右列分析面板：0.9 : 1 */
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* 左列：视频墙自适应内容高度，车次列表占满剩余高度并可滚动 */
+.left-rail {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+}
+
+.col {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(23, 29, 27, 0.88);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+.video-wall {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto auto;
+  grid-template-areas:
+    "head"
+    "train"
+    "grid";
+  align-content: start;
+  align-self: start;
+  gap: 10px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(23, 29, 27, 0.88);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+.video-wall > .panel-head {
+  grid-area: head;
+}
+
+.video-wall > .train-bar {
+  grid-area: train;
+}
+
+.video-wall > .video-content {
+  grid-area: grid;
+}
+
+/* 接驳车三视图悬浮层：默认隐藏，只由蓝色车名触发，横向顺序为正 / 侧 / 后。 */
+.train-preview {
+  position: relative;
+  z-index: 5;
+}
+
+.view-stack {
+  position: absolute;
+  top: 100%;
+  left: -12px;
+  width: min(610px, calc(100vw - 128px));
+  display: none;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px 0 0;
+  filter: drop-shadow(0 18px 24px rgba(0, 0, 0, 0.5));
+}
+
+.train-preview:hover .view-stack {
+  display: grid;
+  animation: shuttle-preview-in 140ms ease-out both;
+}
+
+@keyframes shuttle-preview-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.view-item {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  /* 素材是白底产品渲染图，白底可避免加载期闪黑，也让 contain 的信箱边不可见 */
+  background: #fff;
+}
+
+.view-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+/* 标签压在图片左下角的白底留白上（车身居中，四角都是白的），不占额外高度 */
+.view-caption {
+  position: absolute;
+  left: 5px;
+  bottom: 2px;
+  color: #4a5450;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+/* 右侧安全分析面板：常见危险物 / 遗留物清单 / 异常行为分析 三段自上而下 */
+.right-rail {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.items-panel {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.hazard-panel {
+  grid-template-rows: repeat(2, minmax(0, auto));
+  gap: 8px;
+}
+
+.behavior-panel {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.danger {
+  color: var(--red);
+}
+
+.clear {
+  color: var(--green);
+}
+
+/* ===== 主画面 + 四路实时缩略图 + 静态接驳车地图 ===== */
+.video-content {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(180px, 3fr);
+  align-items: stretch;
+  gap: 12px;
+}
+
+.video-grid {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  gap: 8px;
+}
+
+.shuttle-map-card {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid rgba(120, 216, 255, 0.34);
+  border-radius: 10px;
+  background: #dfe5df;
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.24);
+}
+
+.shuttle-map-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  object-position: center;
+}
+
+.shuttle-map-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(7, 14, 12, 0.34), transparent 20%);
+}
+
+.shuttle-map-caption {
+  position: absolute;
+  z-index: 1;
+  top: 9px;
+  left: 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid rgba(114, 216, 151, 0.32);
+  border-radius: 999px;
+  background: rgba(11, 24, 20, 0.82);
+  color: #e9fff1;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(5px);
+}
+
+.map-caption-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px rgba(114, 216, 151, 0.8);
+}
+
+.cam-cell {
+  position: relative;
+  min-width: 0;
+  aspect-ratio: 16 / 9;
+  /* figure 的 UA 默认样式是 margin: 1em 40px，不重置会凭空吃掉 80px 宽 / 32px 高，
+     导致格子无法按栅格轨道精确控宽，也会让视频比预期小一圈 */
+  margin: 0;
+  overflow: hidden;
+  border-radius: 10px;
+  background: #050807;
+  border: 1px solid var(--line);
+}
+
+.cam-cell video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  background: #000;
+}
+
+.cam-main {
+  width: 100%;
+  border-color: rgba(120, 216, 255, 0.34);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.24);
+}
+
+.camera-strip {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.camera-thumb {
+  position: relative;
+  min-width: 0;
+  padding: 0;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #050807;
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+
+.camera-thumb:hover {
+  border-color: rgba(120, 216, 255, 0.68);
+  transform: translateY(-1px);
+}
+
+.camera-thumb:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+.camera-thumb.active {
+  border-color: var(--cyan);
+  box-shadow:
+    0 0 0 1px rgba(120, 216, 255, 0.48),
+    0 0 15px rgba(120, 216, 255, 0.28);
+}
+
+.camera-thumb-video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  background: #000;
+  pointer-events: none;
+}
+
+.camera-thumb-shade {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.28), transparent 42%, rgba(0, 0, 0, 0.52));
+}
+
+.camera-thumb-live,
+.camera-thumb-label {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+
+.camera-thumb-live {
+  top: 5px;
+  left: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #fff;
+}
+
+.camera-thumb-live .live-dot {
+  width: 5px;
+  height: 5px;
+}
+
+.camera-thumb-label {
+  right: 6px;
+  bottom: 5px;
+  color: #fff;
+  text-shadow: 0 1px 4px #000;
+}
+
+.cam-shade {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.28) 0%,
+    transparent 20%,
+    transparent 78%,
+    rgba(0, 0, 0, 0.42) 100%
+  );
+}
+
+.cam-live {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ff5f5f;
+  box-shadow: 0 0 8px rgba(255, 95, 95, 0.9);
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.cam-badge {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  padding: 4px 11px;
+  border-radius: 6px;
+  background: rgba(114, 216, 151, 0.95);
+  color: #06210f;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+}
+
+/* 当前接驳车次信息条（视频墙内部顶部，樟宜机场接驳车） */
+.train-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  border: 1px solid rgba(120, 216, 255, 0.3);
+  border-radius: 8px;
+  background: rgba(120, 216, 255, 0.06);
+}
+
+.train-no {
+  color: var(--cyan);
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.train-meta {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.train-route {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* ===== 车次列表（四路摄像头模块下方） ===== */
+.trip-panel {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.trip-head,
+.trip-row {
+  display: grid;
+  grid-template-columns:
+    minmax(0, 1fr) 52px 52px 52px 68px 72px 88px;
+  align-items: center;
+  gap: 8px;
+}
+
+.trip-head {
+  padding: 0 12px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.trip-list {
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  padding-right: 4px;
+}
+
+/* 与异常行为列表一致：下面还有没露出的车次时底部淡出 */
+.trip-list.has-more {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent 100%);
+}
+
+.trip-row {
+  position: relative;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease;
+}
+
+.trip-row::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 0;
+  border-radius: 0 3px 3px 0;
+  background: var(--cyan);
+  transform: translateY(-50%);
+  transition: height 0.2s ease;
+}
+
+.trip-row:hover {
+  border-color: rgba(120, 216, 255, 0.5);
+  background: rgba(120, 216, 255, 0.07);
+}
+
+.trip-row.active {
+  border-color: rgba(120, 216, 255, 0.75);
+  background: rgba(120, 216, 255, 0.12);
+}
+
+.trip-row.active::before {
+  height: 64%;
+}
+
+.trip-row.pending {
+  opacity: 0.72;
+}
+
+.trip-main {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.trip-no {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.trip-no strong {
+  color: var(--cyan);
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+
+.trip-no em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.trip-depart {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.trip-route {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trip-tag {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.trip-tag.running {
+  border-color: rgba(114, 216, 151, 0.5);
+  background: rgba(114, 216, 151, 0.12);
+  color: var(--green);
+}
+
+.trip-tag.boarding {
+  border-color: rgba(255, 200, 87, 0.5);
+  background: rgba(255, 200, 87, 0.12);
+  color: var(--amber);
+}
+
+.trip-tag.danger {
+  border-color: rgba(255, 107, 107, 0.5);
+  background: rgba(255, 107, 107, 0.12);
+  color: var(--red);
+}
+
+.trip-tag.clear {
+  border-color: rgba(114, 216, 151, 0.4);
+  background: rgba(114, 216, 151, 0.1);
+  color: var(--green);
+}
+
+.trip-risk {
+  justify-self: center;
+  padding: 3px 7px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.trip-radar {
+  display: grid;
+  place-items: center;
+}
+
+.trip-firstitem {
+  width: 52px;
+  height: 52px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.04);
+  display: grid;
+  place-items: center;
+}
+
+.trip-firstitem img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #ffffff;
+  display: block;
+}
+
+.dash {
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+}
+
+.wall-status {
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.wall-status.muted {
+  color: var(--muted);
+}
+
+/* ===== 物品清单：一件物品与其可能所属人在同一行，最多 3 名 ===== */
+.item-list {
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding-right: 4px;
+}
+
+.list-header {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1.6fr);
+  gap: 16px;
+  padding: 2px 12px 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+
+.item-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1.6fr);
+  gap: 16px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease,
+    transform 0.16s ease;
+}
+
+.item-row:hover,
+.item-row.active {
+  border-color: rgba(114, 216, 151, 0.7);
+  background: rgba(114, 216, 151, 0.12);
+}
+
+.item-row.danger.active {
+  border-color: rgba(255, 107, 107, 0.7);
+  background: rgba(255, 107, 107, 0.12);
+}
+
+/* 物品主体：缩略图 + 名称/风险 */
+.item-identity {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.item-identity::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  right: -8px;
+  width: 1.5px;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(120, 216, 255, 0.55) 18%,
+    rgba(120, 216, 255, 0.55) 82%,
+    transparent
+  );
+  border-radius: 1px;
+  box-shadow: 0 0 8px rgba(120, 216, 255, 0.3);
+}
+
+.item-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #ffffff;
+}
+
+.item-meta {
+  min-width: 0;
+}
+
+.item-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.item-title strong {
+  font-size: 14px;
+}
+
+.item-name {
+  margin: 5px 0 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.row-flag {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.row-flag.danger {
+  background: rgba(255, 107, 107, 0.18);
+  color: var(--red);
+}
+
+.row-flag.clear {
+  background: rgba(114, 216, 151, 0.16);
+  color: var(--green);
+}
+
+.row-sub {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* 所属人区：与物品同行，最多 3 名 */
+.owner-list {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: stretch;
+}
+
+.owner-card {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 7px 8px;
+  border: 1px solid rgba(120, 216, 255, 0.28);
+  border-radius: 8px;
+  background: rgba(120, 216, 255, 0.06);
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease;
+}
+
+.owner-card.danger {
+  border-color: rgba(255, 107, 107, 0.42);
+  background: rgba(255, 107, 107, 0.09);
+}
+
+.owner-card:hover {
+  border-color: rgba(114, 216, 151, 0.7);
+  background: rgba(114, 216, 151, 0.14);
+}
+
+.owner-avatar {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: #ffffff;
+}
+
+.owner-body {
+  min-width: 0;
+}
+
+.owner-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.owner-top strong {
+  flex: 0 0 auto;
+  font-size: 13px;
+}
+
+.owner-score {
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.owner-card.danger .owner-score {
+  color: var(--red);
+}
+
+.owner-name {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 11px;
+}
+
+/* ===== 风险等级标签（高/中/低） ===== */
+.risk-tag {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.risk-tag.danger {
+  background: rgba(255, 107, 107, 0.18);
+  color: var(--red);
+}
+
+.risk-tag.warn {
+  background: rgba(255, 200, 87, 0.18);
+  color: var(--amber);
+}
+
+.risk-tag.clear {
+  background: rgba(114, 216, 151, 0.16);
+  color: var(--green);
+}
+
+/* ===== 物品资料库：左侧标题 + 右侧单行图片轨道 ===== */
+.catalog-row {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 192px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.catalog-label {
+  position: relative;
+  min-width: 0;
+  min-height: 88px;
+  padding: 8px 8px 8px 11px;
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.catalog-label::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--red);
+}
+
+.catalog-row-luggage .catalog-label::before {
+  background: var(--cyan);
+}
+
+.catalog-label .eyebrow {
+  margin-bottom: 1px;
+  font-size: 9px;
+  line-height: 1.08;
+  white-space: normal;
+}
+
+.catalog-row-luggage .catalog-label .eyebrow {
+  color: var(--cyan);
+}
+
+.catalog-label h2 {
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.catalog-count {
+  width: max-content;
+  margin-top: 3px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.catalog-track {
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 88px;
+  grid-template-rows: 88px;
+  gap: 7px;
+  padding: 0 0 4px;
+  overscroll-behavior-inline: contain;
+  scroll-snap-type: inline proximity;
+  scrollbar-color: rgba(120, 216, 255, 0.5) transparent;
+  scrollbar-width: thin;
+}
+
+.catalog-track:focus-visible {
+  outline: 2px solid rgba(120, 216, 255, 0.78);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.catalog-track::-webkit-scrollbar {
+  height: 4px;
+}
+
+.catalog-track::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(120, 216, 255, 0.5);
+}
+
+.catalog-track::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.catalog-card {
+  position: relative;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #ffffff;
+  scroll-snap-align: start;
+}
+
+.catalog-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+.catalog-card-text {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 18px 6px 6px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.82), transparent);
+  display: grid;
+  gap: 1px;
+  z-index: 1;
+}
+
+.catalog-card-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.catalog-card-en {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* ===== 异常行为分析：类型 → 问题统计 → 证据截图 ===== */
+/* 每一栏自适应高度，与"遗留物·所属人"栏目一致：内容决定高度，不强制最小值 */
+.behavior-list {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  padding-right: 4px;
+}
+
+/* 下面还有没露出来的行时，底部淡出，避免看起来被硬切断 */
+.behavior-list.has-more {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent 100%);
+}
+
+.behavior-item {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 0.42fr) minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 107, 107, 0.4);
+  border-radius: 8px;
+  background: rgba(255, 107, 107, 0.07);
+  align-items: center;
+  overflow: hidden;
+}
+
+.behavior-info {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  gap: 4px;
+  align-content: center;
+  justify-items: start;
+}
+
+.behavior-head {
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.behavior-metrics {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.behavior-risk {
+  padding: 3px 7px;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.behavior-radar {
+  display: grid;
+  place-items: center;
+}
+
+/* .behavior-head .risk-tag 已合并到 .behavior-risk */
+
+/* 中英文同一行，压缩行高 */
+.behavior-title {
+  min-width: 0;
+  flex: 0 1 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.behavior-title strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.behavior-en {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.behavior-count {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.behavior-count strong {
+  color: var(--red);
+  font-size: 20px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.behavior-issues {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.issue {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.issue b {
+  color: var(--red);
+  font-weight: 900;
+}
+
+/* 证据截图：截图行给固定高度（54px），缩略图高度 = 100%、宽度由 16:9 反推（96px）
+   全部尺寸都是确定值 —— 不会因为 1 张 / 2 张、也不会因为栅格行高变化而被拉伸或顶破卡片 */
+.behavior-shots {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  height: 54px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.behavior-shots .shot {
+  position: relative;
+  margin: 0;
+  flex: 0 0 auto;
+  height: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #060807;
+}
+
+.behavior-shots .shot-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.behavior-shots .shot-tag {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px 6px 3px;
+  background: linear-gradient(to top, rgba(6, 8, 7, 0.88), rgba(6, 8, 7, 0));
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1;
+}
+
+.shot-cam {
+  color: var(--green);
+}
+
+.shot-seq {
+  color: var(--muted);
+}
+
+/* ===== Toast ===== */
+.toast {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  max-width: min(420px, calc(100% - 48px));
+  padding: 14px 16px;
+  border: 1px solid rgba(114, 216, 151, 0.5);
+  border-radius: 8px;
+  background: rgba(20, 28, 24, 0.96);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  transform: translateY(16px);
+  pointer-events: none;
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (max-width: 1500px) {
+  .item-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .list-header {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  body {
+    overflow: auto;
+  }
+  .app-shell {
+    height: auto;
+    min-height: 100vh;
+    min-height: 100dvh;
+    grid-template-rows: auto auto;
+    overflow: visible;
+  }
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    overflow: visible;
+  }
+  .left-rail,
+  .right-rail {
+    min-height: auto;
+  }
+  .right-rail {
+    grid-template-rows: auto auto auto;
+  }
+  .video-wall {
+    align-self: stretch;
+  }
+  .video-content {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .video-grid {
+    width: 100%;
+  }
+  .shuttle-map-card {
+    min-height: 220px;
+    aspect-ratio: 16 / 7;
+  }
+  .shuttle-map-image {
+    object-position: center 48%;
+  }
+  .left-rail {
+    align-self: stretch;
+  }
+  /* 窄屏：车次行去掉表头，车次状态与遗留物判定收窄避免挤压 */
+  .trip-head {
+    display: none;
+  }
+  .trip-head,
+  .trip-row {
+    grid-template-columns: minmax(0, 1fr) 58px 74px 88px;
+    gap: 8px;
+  }
+}
+
+@media (max-width: 620px) {
+  .camera-strip {
+    gap: 5px;
+  }
+  .camera-thumb-live {
+    display: none;
+  }
+  .camera-thumb-label {
+    right: 4px;
+    bottom: 3px;
+    font-size: 8px;
+  }
+  .view-stack {
+    width: calc(100vw - 136px);
+    gap: 5px;
+  }
+  .owner-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .item-identity {
+    grid-template-columns: 76px minmax(0, 1fr);
+  }
+  .catalog-row {
+    grid-template-columns: 164px minmax(0, 1fr);
+    gap: 7px;
+  }
+  .catalog-label {
+    min-height: 78px;
+    padding-right: 6px;
+  }
+  .catalog-label h2 {
+    font-size: 12px;
+  }
+  .catalog-label .eyebrow {
+    font-size: 8px;
+  }
+  .catalog-track {
+    grid-auto-columns: 78px;
+    grid-template-rows: 78px;
+  }
+  /* 窄屏：顶栏改上下两行居中，避免标题与案件号互相挤压 */
+  .topbar {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+  }
+  .brand,
+  .topbar-status {
+    grid-column: 1;
+  }
+  .topbar-status {
+    justify-self: center;
+  }
+  /* 窄屏：行为卡片改为上下结构（文字在上、截图在下），行高按内容走 */
+  .behavior-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .behavior-metrics {
+    flex-direction: row;
+    border-left: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    padding: 8px 0 0;
+    width: 100%;
+    justify-content: flex-start;
+  }
+}

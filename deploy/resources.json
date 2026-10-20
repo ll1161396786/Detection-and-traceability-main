@@ -1,0 +1,8 @@
+{
+  "airport-detective-backend/models/yolov10b.pt": "3846434cbf0016b663a1ccd6d843c48468f6852f4feeddcb9f67f9182168c142",
+  "airport-detective-backend/models/yolov10l.pt": "83769ec3cbc61f18113f612f8bdcf922396628d620682bb72966e9b148004b8b",
+  "airport-detective-backend/models/yolov10m.pt": "ff2c559f11d13701abc4e0345f82851d146ecfe7035efaafcc08475cfd8b5f2d",
+  "airport-detective-backend/models/yolov10n.pt": "61b91ffc99b284792dca49bf40216945833cc2a515e1a742954e6e9327cfc19e",
+  "airport-detective-backend/models/yolov10s.pt": "96af3fc7c7169abcc4867f3e3088b761bb33cf801283c2ec05f9703d63a0ba77",
+  "airport-detective-backend/models/yolov10x.pt": "6e6eae65e6c268c49a25849922e0c75a5c707d626d67170d16a97813b0f8eb79"
+}

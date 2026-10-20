@@ -1,0 +1,7 @@
+# Original machine baseline ONLY: Windows x64, Python 3.10/3.11, CUDA 12.9.
+# General deployment: select target-compatible torch/torchvision first,
+# then install requirements-app.txt. Read the current deployment manual.
+--extra-index-url https://download.pytorch.org/whl/cu129
+torch==2.8.0+cu129
+torchvision==0.23.0+cu129
+-r deploy/requirements-common.txt
