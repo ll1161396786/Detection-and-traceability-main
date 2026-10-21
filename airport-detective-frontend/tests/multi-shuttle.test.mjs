@@ -25,7 +25,7 @@ function setup() {
   const live = readFileSync(new URL('../live-client.js', import.meta.url), 'utf8');
   const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   vm.runInContext(live + '\n' + app.slice(0, app.lastIndexOf('\nrenderVideoWall();')), context);
-  vm.runInContext(`renderTrips = () => {}; renderCurrentTrip = () => {};
+  vm.runInContext(`globalThis.realRenderTrips = renderTrips; renderTrips = () => {}; renderCurrentTrip = () => {};
     renderLiveVideoWall = () => {}; renderLiveItems = () => {};
     updateHeaderControls = () => {}; updateLiveStatus = () => {}; showToast = () => {};`, context);
   return { context, revoked, run: text => vm.runInContext(text, context) };
@@ -33,6 +33,15 @@ function setup() {
 const state = (number, overrides = {}) => ({ trip_id: `T-${number}`, shuttle_id: number,
   cameras: [], alerts: [], status: 'idle', model: 'yolov10n.pt', ready: true, ...overrides });
 const response = data => ({ ok: true, json: async () => data });
+
+test('default selection is 01 and the fleet list sorts existing and discovered numbers', () => {
+  const { run } = setup();
+  assert.equal(run('activeTrip.id'), 'T-01');
+  run('trips.push({ ...trips[0], id: "T-10" }, { ...trips[0], id: "T-09" }); realRenderTrips()');
+  const markup = run('tripList.innerHTML');
+  const numbers = [...markup.matchAll(/data-trip="T-([0-9]+)"/g)].map(match => Number(match[1]));
+  assert.deepEqual(numbers, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+});
 
 test('vehicles without old demo clips can select and start their own backend', async () => {
   const { context, run } = setup();

@@ -527,7 +527,7 @@ const trips = [
   }
 ];
 
-// Keep the existing initial selection (04); every vehicle uses backend inference.
+// Every numbered vehicle uses backend inference.
 for (const number of ["01", "02", "03"]) {
   trips.push({ id: `T-${number}`, no: `接驳车 ${number}`, full: `樟宜机场接驳车 ${number}`,
     depart: "—", flight: "—", route: "本地四路视频", status: "待检测", statusClass: "", clipId: null });
@@ -621,8 +621,8 @@ const candidateImages = {
 };
 
 let activeClip = clips[1];
-// 默认选中04；切车时同步切换该车的预测画面和警报档案。
-let activeTrip = trips[0];
+// 默认选中01；切车时同步切换该车的预测画面和警报档案。
+let activeTrip = trips.find(trip => trip.id === "T-01") || trips[0];
 function renderVideoWall() {
   if (isLiveTrip(activeTrip)) return renderLiveVideoWall();
   wallStatus.textContent = `${cameras.length}/4 在线`;
@@ -843,6 +843,7 @@ function renderTrips() {
   tripCount.textContent = `${trips.length} 个车次`;
 
   tripList.innerHTML = trips
+    .slice().sort((a, b) => Number(a.id.slice(2)) - Number(b.id.slice(2)))
     .map((trip) => {
       const clip = isLiveTrip(trip) ? liveTripClip(trip) : trip.clipId ? clips.find((item) => item.id === trip.clipId) : null;
       const verdict = resolveTripVerdict(trip);

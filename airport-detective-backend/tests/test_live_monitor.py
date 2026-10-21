@@ -113,12 +113,16 @@ class LiveMonitorTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "当前找到 3 个"):
             video_sources(server, "02")
 
-    def test_legacy_root_only_for_04_and_explicit_folder_wins(self):
+    def test_each_vehicle_requires_its_own_folder(self):
         for i in range(4):
             (self.videos / f"arbitrary-{i}.mp4").touch()
-        self.assertEqual(video_sources(server, "04")[0], self.videos)
-        with self.assertRaisesRegex(ValueError, "videos/03/"):
-            video_sources(server, "03")
+        for number in ["01", "03", "04"]:
+            with self.assertRaisesRegex(ValueError, f"videos/{number}/"):
+                video_sources(server, number)
+        (self.videos / "01").mkdir()
+        for path in self.videos.glob("*.mp4"):
+            path.rename(self.videos / "01" / path.name)
+        self.assertEqual(video_sources(server, "01")[0], self.videos / "01")
         (self.videos / "04").mkdir()
         with self.assertRaisesRegex(ValueError, "当前找到 0 个"):
             video_sources(server, "04")

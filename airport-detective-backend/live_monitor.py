@@ -21,12 +21,10 @@ def shuttle_number(value):
 
 
 def video_sources(server, number):
-    """A dedicated vehicle folder wins; only 04 supports the legacy root."""
+    """Every vehicle reads exactly four videos from its own numbered folder."""
     number = shuttle_number(number)
     folder = server.VIDEOS / number
-    if number == "04" and not folder.exists():
-        folder = server.VIDEOS
-    if not folder.is_dir() or folder.is_symlink() or (folder.resolve().parent != server.VIDEOS.resolve() and folder != server.VIDEOS):
+    if not folder.is_dir() or folder.is_symlink() or folder.resolve().parent != server.VIDEOS.resolve():
         raise ValueError(f"请在 videos/{number}/ 放入四个视频，文件名不限。")
     def natural_key(path):
         return ([ (1, int(part)) if part.isdigit() else (0, part.casefold())
