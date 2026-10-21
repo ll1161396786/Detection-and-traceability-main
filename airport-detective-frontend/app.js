@@ -468,7 +468,7 @@ const cameras = [
 let activeCameraId = cameras[0].id;
 
 // 车次列表：新加坡樟宜机场接驳车班次（按接驳航班编排，非高铁车次）
-// clipId 指向 clips 中的检测片段，点击该行可切换视频墙标注与右侧遗留物清单；无片段的车次仅展示排班
+// 每辆车均接入自己的后端四路检测；历史 clipId 仅供旧演示代码兼容。
 const trips = [
   {
     id: "T-04",
@@ -526,6 +526,12 @@ const trips = [
     clipId: null
   }
 ];
+
+// Keep the existing initial selection (04); every vehicle uses backend inference.
+for (const number of ["01", "02", "03"]) {
+  trips.push({ id: `T-${number}`, no: `接驳车 ${number}`, full: `樟宜机场接驳车 ${number}`,
+    depart: "—", flight: "—", route: "本地四路视频", status: "待检测", statusClass: "", clipId: null });
+}
 
 // 常见危险物（依据《中国民用航空安全检查规则》禁止携带和托运物品目录，作提示警示展示）
 const hazardItems = [
@@ -615,11 +621,10 @@ const candidateImages = {
 };
 
 let activeClip = clips[1];
-// 车次选中态与遗留物片段选中态是两套独立状态：车次列表只驱动视频墙的车次条，
-// 不参与右侧「遗留物 · 所属人」的高亮，两者互不影响（初始时恰好对齐到同一趟车）
+// 默认选中04；切车时同步切换该车的预测画面和警报档案。
 let activeTrip = trips[0];
 function renderVideoWall() {
-  if (activeTrip.id === "T-04") return renderLiveVideoWall();
+  if (isLiveTrip(activeTrip)) return renderLiveVideoWall();
   wallStatus.textContent = `${cameras.length}/4 在线`;
   const activeCamera = cameras.find((cam) => cam.id === activeCameraId) || cameras[0];
   const thumbnails = cameras
@@ -679,7 +684,7 @@ function renderVideoWall() {
 }
 
 function selectCamera(cameraId) {
-  if (activeTrip.id === "T-04") return selectLiveCamera(cameraId);
+  if (isLiveTrip(activeTrip)) return selectLiveCamera(cameraId);
   const camera = cameras.find((item) => item.id === cameraId);
   if (!camera) return;
 
@@ -801,7 +806,7 @@ function buildBehaviorRadarSvg(item) {
 }
 
 function resolveTripVerdict(trip) {
-  if (trip.id === "T-04") return liveTripVerdict();
+  if (isLiveTrip(trip)) return liveTripVerdict(trip);
   const clip = trip.clipId ? clips.find((item) => item.id === trip.clipId) : null;
   if (!clip) return { label: "未检测", className: "" };
   return { label: clip.eventLabel, className: clip.level === "danger" ? "danger" : "clear" };
@@ -815,17 +820,18 @@ function renderCurrentTrip() {
   trainRoute.textContent = activeTrip.route;
 }
 
-// 选中车次：只更新车次条与车次列表自身的高亮，不触碰右侧遗留物清单
+// 切车不自动启停检测，控制操作进行时禁止切车。
 function selectTrip(id) {
   const trip = trips.find((item) => item.id === id);
   if (!trip) return;
 
-  if (!trip.clipId) {
-    showToast(`${trip.full}（${trip.depart} 发车）尚未接入检测片段`);
+  if (liveControlBusy || liveClearBusy) {
+    showToast("正在处理检测操作，请稍后切换车辆。");
     return;
   }
 
   activeTrip = trip;
+  activateLiveTrip();
   renderCurrentTrip();
   renderTrips();
   renderVideoWall();
@@ -838,10 +844,10 @@ function renderTrips() {
 
   tripList.innerHTML = trips
     .map((trip) => {
-      const clip = trip.id === "T-04" ? liveTripClip() : trip.clipId ? clips.find((item) => item.id === trip.clipId) : null;
+      const clip = isLiveTrip(trip) ? liveTripClip(trip) : trip.clipId ? clips.find((item) => item.id === trip.clipId) : null;
       const verdict = resolveTripVerdict(trip);
       const isActive = activeTrip && activeTrip.id === trip.id;
-      const rowClass = ["trip-row", isActive ? "active" : "", trip.clipId ? "" : "pending"]
+      const rowClass = ["trip-row", isActive ? "active" : ""]
         .filter(Boolean)
         .join(" ");
 
@@ -850,7 +856,7 @@ function renderTrips() {
           class="${rowClass}"
           type="button"
           data-trip="${trip.id}"
-          title="${escapeHtml(`${trip.full} · ${trip.route} · ${trip.clipId ? `已接入 ${trip.clipId} 片段检测` : "尚未接入检测片段"}`)}"
+          title="${escapeHtml(`${trip.full} · ${trip.route} · ${liveStates.get(trip.id)?.configuration_error || '独立四路视频检测'}`)}"
         >
           <div class="trip-main">
             <div class="trip-no">
@@ -860,7 +866,7 @@ function renderTrips() {
             <span class="trip-route">${escapeHtml(`${trip.flight} · ${trip.route}`)}</span>
           </div>
           <span class="trip-tag trip-risk ${riskClass[clip?.object.risk] || ''}">${clip?.object.risk ?? '—'}</span>
-          <span class="trip-radar">${trip.id === "T-04" ? '<span class="dash">—</span>' : clip ? buildRadarSvg(trip) : '<span class="dash">—</span>'}</span>
+          <span class="trip-radar">${isLiveTrip(trip) ? '<span class="dash">—</span>' : clip ? buildRadarSvg(trip) : '<span class="dash">—</span>'}</span>
           <span class="trip-firstitem">
             ${clip ? `<img src="${clip.object.preview}" data-fallback-src="${clip.object.previewFallback}" alt="${clip.object.id}" loading="lazy" />` : '<span class="dash">—</span>'}
           </span>
@@ -877,7 +883,7 @@ function renderTrips() {
 }
 
 function renderItemsAndPersons() {
-  if (activeTrip.id === "T-04") return renderLiveItems();
+  if (isLiveTrip(activeTrip)) return renderLiveItems();
   delete itemList.dataset.live;
   itemCount.textContent = `${clips.length} 件遗留物`;
 
@@ -1064,7 +1070,7 @@ itemList.addEventListener("click", (event) => {
   if (button) setClip(button.dataset.clip);
 });
 
-// 车次列表：仅切换当前车次（车次条 + 本列表高亮），不联动右侧遗留物清单
+// 车次列表切换当前车辆及其四路画面、遗留物档案。
 tripList.addEventListener("click", (event) => {
   const row = event.target.closest("[data-trip]");
   if (row) selectTrip(row.dataset.trip);

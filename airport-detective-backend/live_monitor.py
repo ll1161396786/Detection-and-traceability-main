@@ -2,6 +2,7 @@
 import copy
 import json
 import logging
+import re
 import threading
 import time
 import uuid
@@ -13,15 +14,43 @@ from analytics import SceneAnalyzer, draw_scene
 from engine import Detector, cv2, MODEL_NAMES, ROOT
 
 
+def shuttle_number(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,2}", value) or int(value) == 0:
+        raise ValueError("接驳车编号应为 01–99。")
+    return f"{int(value):02d}"
+
+
+def video_sources(server, number):
+    """A dedicated vehicle folder wins; only 04 supports the legacy root."""
+    number = shuttle_number(number)
+    folder = server.VIDEOS / number
+    if number == "04" and not folder.exists():
+        folder = server.VIDEOS
+    if not folder.is_dir() or folder.is_symlink() or (folder.resolve().parent != server.VIDEOS.resolve() and folder != server.VIDEOS):
+        raise ValueError(f"请在 videos/{number}/ 放入四个视频，文件名不限。")
+    def natural_key(path):
+        return ([ (1, int(part)) if part.isdigit() else (0, part.casefold())
+                  for part in re.split(r"([0-9]+)", path.name) ], path.name)
+    sources = sorted((path for path in folder.iterdir()
+                      if path.is_file() and not path.is_symlink() and not path.name.startswith(".")
+                      and path.suffix.lower() in server.EXTENSIONS), key=natural_key)
+    if len(sources) != 4:
+        relative = folder.relative_to(server.VIDEOS).as_posix()
+        label = "videos/" if relative == "." else f"videos/{relative}/"
+        raise ValueError(f"接驳车 {number}：{label} 需要恰好四个视频，当前找到 {len(sources)} 个；文件名不限。")
+    return folder, sources
+
+
 class ShuttleMonitor:
-    def __init__(self, server):
+    def __init__(self, server, number="04"):
         self.s = server
+        self.number = shuttle_number(number)
         self.guard = threading.RLock()
         self.stop_event = threading.Event()
         self.worker = None
         self.session = None
         # Reopen the last evidence after a server restart, without claiming it is live.
-        saved = server.DATA / "shuttle-04.json"
+        saved = server.DATA / f"shuttle-{self.number}.json"
         if saved.exists():
             try:
                 previous = json.loads(saved.read_text(encoding="utf-8"))
@@ -34,8 +63,8 @@ class ShuttleMonitor:
         with self.guard, self.s.lock:
             session = copy.deepcopy(self.session)
             if not session:
-                return {"trip_id": "T-04", "status": "idle", "model": "yolov10n.pt", "cameras": [], "alerts": []}
-            session.setdefault("model", self.s.jobs[session["cameras"][0]["job_id"]]["options"]["model"])
+                return {"trip_id": f"T-{self.number}", "status": "idle", "model": "yolov10n.pt", "cameras": [], "alerts": []}
+            session.setdefault("model", self.s.jobs[session["cameras"][0]["job_id"]].get("options", {}).get("model", "yolov10n.pt"))
             active = self.worker is not None and self.worker.is_alive()
             session["status"] = "running" if active and not self.stop_event.is_set() else "stopped"
             alerts = []
@@ -69,12 +98,15 @@ class ShuttleMonitor:
             if self.worker and self.worker.is_alive():
                 if model != self.state()["model"]:
                     raise ValueError("请先停止检测，再切换模型并启动。")
+                if self.stop_event.is_set():
+                    raise ValueError("检测正在停止，请稍后再启动。")
                 return self.state()
             if any(j["status"] not in self.s.TERMINAL for j in self.s.jobs.values()):
-                raise ValueError("已有识别任务正在运行，请先停止该任务再启动四路监控。")
-            sources = [self.s.VIDEOS / f"camera-{i}.mp4" for i in range(1, 5)]
+                raise ValueError("已有其他车辆或识别任务正在运行，请先停止该任务再启动四路监控。")
+            folder, sources = video_sources(self.s, self.number)
             metas = [self.s.video_info(source) for source in sources]
-            self.session = {"trip_id": "T-04", "id": uuid.uuid4().hex, "model": model,
+            self.session = {"trip_id": f"T-{self.number}", "id": uuid.uuid4().hex, "model": model,
+                            "source_directory": folder.relative_to(self.s.VIDEOS).as_posix(),
                             "created": datetime.now().isoformat(timespec="seconds"), "cameras": []}
             for i, meta in enumerate(metas, 1):
                 jid = uuid.uuid4().hex
@@ -84,7 +116,7 @@ class ShuttleMonitor:
                 opts = {"model": model, "device": "auto", "confidence": .25,
                         "imgsz": 640, "scope": "luggage", "stride": 1, "linger_seconds": 3}
                 self.s.jobs[jid] = {"id": jid, "created": self.session["created"], "source": {"name": sources[i-1].name, **meta},
-                                   "options": opts, "train": {"number": "接驳车 04", "route": "樟宜机场 T1 → T3", "carriage": "04", "camera": f"CAM-{i:02d}"},
+                                   "options": opts, "train": {"number": f"接驳车 {self.number}", "route": "樟宜机场接驳线路", "carriage": self.number, "camera": f"CAM-{i:02d}"},
                                    "status": "loading", "message": "正在加载四路监控模型…", "live_camera": i,
                                    "progress": 0, "processed": 0, "frame": 0, "time": 0, "elapsed": 0,
                                    "preview_version": 0, "cancel": False, "archive_cleared": False,
@@ -92,10 +124,11 @@ class ShuttleMonitor:
                                    "current_count": 0, "peak_count": 0, "inference_fps": 0,
                                    "luggage_candidates": [], "candidate_summary": [], "alert_count": 0}
                 self.s.update(jid)
-                self.session["cameras"].append({"id": i, "job_id": jid, "source": sources[i-1].name})
-            self.s.json_write(self.s.DATA / "shuttle-04.json", self.session)
+                self.session["cameras"].append({"id": i, "job_id": jid, "source": sources[i-1].name,
+                                                "source_path": sources[i-1].relative_to(self.s.VIDEOS).as_posix()})
+            self.s.json_write(self.s.DATA / f"shuttle-{self.number}.json", self.session)
             self.stop_event.clear()
-            self.worker = threading.Thread(target=self.run, name="shuttle-04-inference", daemon=True)
+            self.worker = threading.Thread(target=self.run, name=f"shuttle-{self.number}-inference", daemon=True)
             self.worker.start()
             return self.state()
 
@@ -112,7 +145,7 @@ class ShuttleMonitor:
             device = detector.load(self.session["model"], "auto")
             for camera in self.session["cameras"]:
                 job = self.s.jobs[camera["job_id"]]
-                streams.append({"jid": job["id"], "cap": cv2.VideoCapture(str(self.s.VIDEOS / camera["source"])),
+                streams.append({"jid": job["id"], "cap": cv2.VideoCapture(str(self.s.VIDEOS / camera.get("source_path", camera["source"]))),
                                 "analyzer": SceneAnalyzer(3), "frame": 0, "cycle": 1, "processed": 0,
                                 "next_due": 0, "published": 0, "failed": False})
                 self.s.update(job["id"], status="running", message="四路实时检测中")
@@ -198,14 +231,72 @@ class ShuttleMonitor:
                     self.s.update(stream["jid"], status="cancelled", message="监控已停止，警报档案和照片已保留")
 
 
+class ShuttleFleet:
+    """Separate sessions/evidence per vehicle; preserve one active GPU task group."""
+    def __init__(self, server):
+        self.s = server
+        self.guard = threading.RLock()
+        self.monitors = {}
+
+    def get(self, number):
+        number = shuttle_number(number)
+        with self.guard:
+            if number not in self.monitors:
+                self.monitors[number] = ShuttleMonitor(self.s, number)
+            return self.monitors[number]
+
+    def describe(self, number):
+        monitor = self.get(number)
+        state = monitor.state()
+        state["shuttle_id"] = monitor.number
+        try:
+            folder, sources = video_sources(self.s, monitor.number)
+            state.update(ready=True, configuration_error="",
+                         source_directory="videos/" + (folder.relative_to(self.s.VIDEOS).as_posix().strip(".") + "/").lstrip("/"),
+                         source_videos=[p.name for p in sources])
+        except ValueError as exc:
+            state.update(ready=False, configuration_error=str(exc), source_videos=[],
+                         source_directory=f"videos/{monitor.number}/")
+        return state
+
+    def states(self):
+        numbers = {f"{i:02d}" for i in range(1, 9)}
+        with self.guard:
+            numbers.update(self.monitors)
+        for folder in self.s.VIDEOS.iterdir():
+            if folder.is_dir() and re.fullmatch(r"[0-9]{2}", folder.name) and folder.name != "00":
+                numbers.add(folder.name)
+        for saved in self.s.DATA.glob("shuttle-*.json"):
+            number = saved.stem.removeprefix("shuttle-")
+            if re.fullmatch(r"[0-9]{2}", number) and number != "00":
+                numbers.add(number)
+        return {"shuttles": [self.describe(number) for number in sorted(numbers)]}
+
+    def stop(self):
+        with self.guard:
+            monitors = list(self.monitors.values())
+        for monitor in monitors:
+            monitor.stop()
+
+    @property
+    def worker(self):
+        with self.guard:
+            return next((m.worker for m in self.monitors.values() if m.worker and m.worker.is_alive()), None)
+
+
 def register(server):
-    monitor = ShuttleMonitor(server)
-    def start():
+    fleet = ShuttleFleet(server)
+    def start(shuttle_id):
         body = request.get_json(silent=True) or {}
         if not isinstance(body, dict) or ("model" in body and not isinstance(body["model"], str)):
             raise ValueError("无效的模型参数。")
-        return jsonify(monitor.start(body.get("model"))), 202
-    server.app.add_url_rule("/api/shuttles/04/state", "shuttle_state", lambda: jsonify(monitor.state()))
-    server.app.add_url_rule("/api/shuttles/04/start", "shuttle_start", start, methods=["POST"])
-    server.app.add_url_rule("/api/shuttles/04/stop", "shuttle_stop", lambda: jsonify(monitor.stop()), methods=["POST"])
-    return monitor
+        fleet.get(shuttle_id).start(body.get("model"))
+        return jsonify(fleet.describe(shuttle_id)), 202
+    server.app.add_url_rule("/api/shuttles", "shuttles", lambda: jsonify(fleet.states()))
+    server.app.add_url_rule("/api/shuttles/<shuttle_id>/state", "shuttle_state", lambda shuttle_id: jsonify(fleet.describe(shuttle_id)))
+    server.app.add_url_rule("/api/shuttles/<shuttle_id>/start", "shuttle_start", start, methods=["POST"])
+    def stop(shuttle_id):
+        fleet.get(shuttle_id).stop()
+        return jsonify(fleet.describe(shuttle_id))
+    server.app.add_url_rule("/api/shuttles/<shuttle_id>/stop", "shuttle_stop", stop, methods=["POST"])
+    return fleet

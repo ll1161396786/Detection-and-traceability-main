@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import app as server
 from engine import ROOT, cv2
-from live_monitor import ShuttleMonitor
+from live_monitor import ShuttleMonitor, video_sources
 
 
 class LiveMonitorTest(unittest.TestCase):
@@ -20,7 +20,8 @@ class LiveMonitorTest(unittest.TestCase):
         self.videos = self.root / "videos"
         (self.data / "jobs").mkdir(parents=True)
         self.videos.mkdir()
-        self.patches = [patch.object(server, "DATA", self.data), patch.object(server, "VIDEOS", self.videos), patch.object(server, "jobs", {})]
+        self.patches = [patch.object(server, "DATA", self.data), patch.object(server, "VIDEOS", self.videos), patch.object(server, "jobs", {}),
+                        patch.object(server.monitor, "monitors", {})]
         for item in self.patches:
             item.start()
         self.monitor = ShuttleMonitor(server)
@@ -36,17 +37,16 @@ class LiveMonitorTest(unittest.TestCase):
         self.temp.cleanup()
 
     def test_real_four_camera_preview_loop_and_stop(self):
-        # Real, distinct frames from each of the user's four videos, shortened
-        # solely for an isolated loop-boundary check.
+        # Synthetic frames only: tests do not require or publish private videos.
+        import numpy as np
+        folder = self.videos / "02"
+        folder.mkdir()
+        self.monitor = ShuttleMonitor(server, "02")
         for i in range(1, 5):
-            cap = cv2.VideoCapture(str(ROOT / "videos" / f"camera-{i}.mp4"))
-            writer = cv2.VideoWriter(str(self.videos / f"camera-{i}.mp4"), cv2.VideoWriter_fourcc(*"mp4v"), 25, (640, 360))
+            writer = cv2.VideoWriter(str(folder / f"保留原文件名 {i}.mp4"), cv2.VideoWriter_fourcc(*"mp4v"), 25, (640, 360))
             self.assertTrue(writer.isOpened())
             for _ in range(8):
-                ok, frame = cap.read()
-                self.assertTrue(ok)
-                writer.write(cv2.resize(frame, (640, 360)))
-            cap.release()
+                writer.write(np.full((360, 640, 3), i*35, dtype=np.uint8))
             writer.release()
         started = self.monitor.start()
         self.assertEqual(len(started["cameras"]), 4)
@@ -69,7 +69,7 @@ class LiveMonitorTest(unittest.TestCase):
         self.monitor.stop()
         self.monitor.worker.join(10)
         self.assertTrue(all(c["status"] == "cancelled" for c in self.monitor.state()["cameras"]))
-        recovered = ShuttleMonitor(server).state()
+        recovered = ShuttleMonitor(server, "02").state()
         self.assertEqual(recovered["id"], started["id"])
         self.assertEqual(recovered["status"], "stopped")
 
@@ -95,6 +95,80 @@ class LiveMonitorTest(unittest.TestCase):
         self.assertEqual(self.monitor.state()["alerts"][0]["warning_level"], "confirmed")
         self.assertEqual(self.client.post(f"/api/jobs/{jid}/archive/L001/confirm", json={"confirmed": False}).status_code, 200)
         self.assertTrue(all(a["warning_level"] == "suspected" for a in self.monitor.state()["alerts"]))
+
+    def test_arbitrary_names_natural_order_and_exact_count(self):
+        folder = self.videos / "02"
+        folder.mkdir()
+        for name in ["旅行 10.MP4", "旅行 2.mp4", "旅行 1.mov", "旅行 3.mkv"]:
+            (folder / name).touch()
+        (folder / "说明.txt").touch()
+        found, sources = video_sources(server, "2")
+        self.assertEqual(found, folder)
+        self.assertEqual([p.name for p in sources], ["旅行 1.mov", "旅行 2.mp4", "旅行 3.mkv", "旅行 10.MP4"])
+        (folder / "第五个.avi").touch()
+        with self.assertRaisesRegex(ValueError, "当前找到 5 个"):
+            video_sources(server, "02")
+        (folder / "第五个.avi").unlink()
+        (folder / "旅行 3.mkv").unlink()
+        with self.assertRaisesRegex(ValueError, "当前找到 3 个"):
+            video_sources(server, "02")
+
+    def test_legacy_root_only_for_04_and_explicit_folder_wins(self):
+        for i in range(4):
+            (self.videos / f"arbitrary-{i}.mp4").touch()
+        self.assertEqual(video_sources(server, "04")[0], self.videos)
+        with self.assertRaisesRegex(ValueError, "videos/03/"):
+            video_sources(server, "03")
+        (self.videos / "04").mkdir()
+        with self.assertRaisesRegex(ValueError, "当前找到 0 个"):
+            video_sources(server, "04")
+        with self.assertRaises(ValueError):
+            video_sources(server, "../")
+
+    def test_fleet_routes_discover_new_vehicle_without_root_fallback(self):
+        folder = self.videos / "09"
+        folder.mkdir()
+        for i in range(4):
+            (folder / f"unchanged-name-{i}.mp4").touch()
+        response = self.client.get("/api/shuttles")
+        states = {s["shuttle_id"]: s for s in response.get_json()["shuttles"]}
+        self.assertTrue(states["09"]["ready"])
+        self.assertFalse(states["02"]["ready"])
+        self.assertEqual(self.client.get("/api/shuttles/9/state").get_json()["trip_id"], "T-09")
+        self.assertEqual(self.client.post("/api/shuttles/02/start", json={}).status_code, 400)
+        self.assertFalse(server.jobs)
+
+    def test_vehicle_session_and_saved_camera_paths_are_isolated(self):
+        from unittest.mock import Mock
+        for number in ["02", "03"]:
+            folder = self.videos / number
+            folder.mkdir()
+            for i in range(4):
+                (folder / f"original {i}.mp4").touch()
+        worker = Mock()
+        worker.is_alive.return_value = False
+        meta = {"fps": 25, "duration": 1, "frames": 25}
+        with patch("live_monitor.threading.Thread", return_value=worker), patch.object(server, "video_info", return_value=meta):
+            first = server.monitor.get("02").start()
+            self.assertTrue(all(c["source_path"].startswith("02/") for c in first["cameras"]))
+            with self.assertRaisesRegex(ValueError, "其他车辆"):
+                server.monitor.get("03").start()
+            for job in server.jobs.values():
+                job["status"] = "cancelled"
+            second = server.monitor.get("03").start()
+        self.assertNotEqual(first["id"], second["id"])
+        recovered = ShuttleMonitor(server, "02").state()
+        self.assertEqual(recovered["id"], first["id"])
+        self.assertEqual(recovered["trip_id"], "T-02")
+        self.assertEqual(server.jobs[second["cameras"][0]["job_id"]]["train"]["number"], "接驳车 03")
+        for session in [first, second]:
+            jid = session["cameras"][0]["job_id"]
+            server.save_local_archive(jid, [{"id": "L001", "risk": "high", "crop": "crop-L001.jpg", "owners": []}])
+        alerts02 = self.client.get("/api/shuttles/02/state").get_json()["alerts"]
+        alerts03 = self.client.get("/api/shuttles/03/state").get_json()["alerts"]
+        self.assertEqual(len(alerts02), 1)
+        self.assertEqual(len(alerts03), 1)
+        self.assertNotEqual(alerts02[0]["job_id"], alerts03[0]["job_id"])
 
 
 if __name__ == "__main__":

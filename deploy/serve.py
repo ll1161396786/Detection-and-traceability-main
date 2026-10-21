@@ -67,8 +67,9 @@ def main():
         pass
     finally:
         backend.monitor.stop()
-        if backend.monitor.worker:
-            backend.monitor.worker.join(timeout=60)
+        worker = backend.monitor.worker
+        if worker:
+            worker.join(timeout=60)
         server.close()
         if state_file.exists() and json.loads(state_file.read_text(encoding='utf-8')).get('instance') == instance:
             state_file.unlink()
