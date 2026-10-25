@@ -52,8 +52,8 @@ async function monitorApi(path, body) {
 function liveTripVerdict(trip = activeTrip) {
   const state = liveStates.get(trip.id) || { cameras: [], alerts: [], status: "idle" };
   if (liveConnectionError) return { label: "连接中断", className: "danger" };
-  if (state.alerts.some(a => a.warning_level === "confirmed")) return { label: "确认遗留", className: "danger" };
-  if (state.alerts.length) return { label: "疑似遗留", className: "suspected" };
+  if (state.alerts.some(a => a.warning_level === "confirmed")) return { label: "遗留红警", className: "danger" };
+  if (state.alerts.length) return { label: "黄色警告", className: "suspected" };
   return { label: state.status === "running" ? "检测中" : state.ready ? "待检测" : "待配置", className: "" };
 }
 
@@ -140,7 +140,7 @@ function updateLiveStatus() {
 let liveItemsSignature = "";
 function renderLiveItems() {
   const confirmed = liveState.alerts.filter(a => a.warning_level === "confirmed").length;
-  itemCount.textContent = `确认 ${confirmed} · 疑似 ${liveState.alerts.length - confirmed}`;
+  itemCount.textContent = `红警 ${confirmed} · 黄警 ${liveState.alerts.length - confirmed}`;
   const signature = JSON.stringify([liveState.alerts, liveSelectedKey, liveConnectionError]);
   if (signature === liveItemsSignature && itemList.dataset.live === "true") return;
   liveItemsSignature = signature;
@@ -151,15 +151,15 @@ function renderLiveItems() {
     return `<article class="item-row ${level} ${item.key === liveSelectedKey ? "active" : ""}" data-live-key="${escapeHtml(item.key)}">
       <div class="item-identity"><img class="item-thumb" src="${item.package_photo}" alt="${item.id} 遗留物截图" loading="lazy" tabindex="0" role="button" aria-haspopup="dialog" title="点击放大照片" />
         <div class="item-meta"><div class="item-title"><strong>CAM-${item.camera_id} · ${item.id}</strong>
-          <span class="row-flag ${level}">${isConfirmed ? "确认遗留" : "疑似遗留"}</span></div>
+          <span class="row-flag ${level}">${isConfirmed ? item.warning_source === "manual" ? "人工确认" : "遗留红警" : item.transfer_count ? "所属关系变化" : "黄色警告"}</span></div>
           <p class="item-name">${escapeHtml(item.label_zh)}</p>
           <span class="row-sub">${escapeHtml(activeTrip.no)} · 静止 ${item.stationary_seconds}s</span>
           <p class="live-reason" title="${escapeHtml(item.reason)}">${escapeHtml(item.reason)}</p>
-          <button class="live-confirm" type="button" data-confirm-job="${item.job_id}" data-confirm-item="${item.id}" data-confirmed="${!isConfirmed}">${isConfirmed ? "撤销确认" : "确认遗留"}</button>
+          <button class="live-confirm" type="button" data-confirm-job="${item.job_id}" data-confirm-item="${item.id}" data-confirmed="${!isConfirmed}">${isConfirmed ? "撤销红警" : "人工确认遗留"}</button>
         </div></div>
       <div class="owner-list">${item.owners.length ? item.owners.slice(0, 3).map(owner => `
         <div class="owner-card" title="所属人关联分数，需人工复核"><img class="owner-avatar" src="${owner.photo}" alt="CAM-${item.camera_id} ${owner.person_id} 可能所属人截图" loading="lazy" tabindex="0" role="button" aria-haspopup="dialog" title="点击放大照片" />
-          <div class="owner-body"><div class="owner-top"><strong>${owner.person_id}</strong><span class="owner-score">${Math.round(owner.probability * 100)}%</span></div><span class="owner-name">可能所属人 · 关联分数</span></div></div>`).join("") : '<span class="live-empty-owner">暂无所属人关联证据</span>'}</div>
+          <div class="owner-body"><div class="owner-top"><strong>${owner.person_id}</strong><span class="owner-score">${Math.round(owner.probability * 100)}%</span></div><span class="owner-name">${owner.is_current_owner ? owner.present ? "当前关联人" : "最近关联人" : owner.is_first_owner ? "首位关联人" : "历史关联人"} · 关联分数</span></div></div>`).join("") : '<span class="live-empty-owner">暂无所属人关联证据</span>'}</div>
     </article>`;
   }).join("") : `<p class="live-empty">${liveConnectionError ? "后端连接中断，等待恢复" : "暂无遗留物警报"}</p>`;
 }

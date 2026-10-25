@@ -25,7 +25,7 @@ function setup() {
   const live = readFileSync(new URL('../live-client.js', import.meta.url), 'utf8');
   const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   vm.runInContext(live + '\n' + app.slice(0, app.lastIndexOf('\nrenderVideoWall();')), context);
-  vm.runInContext(`globalThis.realRenderTrips = renderTrips; renderTrips = () => {}; renderCurrentTrip = () => {};
+  vm.runInContext(`globalThis.realRenderTrips = renderTrips; globalThis.realRenderLiveItems = renderLiveItems; renderTrips = () => {}; renderCurrentTrip = () => {};
     renderLiveVideoWall = () => {}; renderLiveItems = () => {};
     updateHeaderControls = () => {}; updateLiveStatus = () => {}; showToast = () => {};`, context);
   return { context, revoked, run: text => vm.runInContext(text, context) };
@@ -41,6 +41,21 @@ test('default selection is 01 and the fleet list sorts existing and discovered n
   const markup = run('tripList.innerHTML');
   const numbers = [...markup.matchAll(/data-trip="T-([0-9]+)"/g)].map(match => Number(match[1]));
   assert.deepEqual(numbers, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+});
+
+test('automatic red and transfer yellow show the correct badges and current holder', () => {
+  const { context, run } = setup();
+  const base = {id:'L001',camera_id:1,job_id:'job',package_photo:'/photo',label_zh:'行李箱',reason:'关系变化',stationary_seconds:3};
+  context.fixture = state('01',{alerts:[
+    {...base,key:'red',warning_level:'confirmed',warning_source:'automatic',owners:[]},
+    {...base,key:'yellow',warning_level:'suspected',transfer_count:1,owners:[{person_id:'P002',photo:'/owner',probability:.8,is_current_owner:true,present:true}]},
+  ]});
+  run('liveState = fixture; realRenderLiveItems()');
+  const markup = run('itemList.innerHTML');
+  assert.ok(markup.includes('遗留红警'));
+  assert.ok(markup.includes('所属关系变化'));
+  assert.ok(markup.includes('当前关联人'));
+  assert.equal(run('itemCount.textContent'),'红警 1 · 黄警 1');
 });
 
 test('vehicles without old demo clips can select and start their own backend', async () => {

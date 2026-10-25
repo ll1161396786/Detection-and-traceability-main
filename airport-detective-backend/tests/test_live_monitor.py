@@ -113,6 +113,25 @@ class LiveMonitorTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "当前找到 3 个"):
             video_sources(server, "02")
 
+    def test_automatic_red_persists_and_manual_review_is_scoped_to_event(self):
+        jid = "a" * 32
+        (self.data / "jobs" / jid).mkdir()
+        server.jobs[jid] = {"id":jid,"status":"cancelled","archive_cleared":False}
+        item = {"id":"L001","crop":"crop-L001.jpg","owners":[],"risk":"high",
+                "automatic_warning_level":"none","warning_level":"none","alarm_revision":0}
+        path = self.data / "jobs" / jid / "archive.json"
+        server.save_local_archive(jid,[item])
+        self.assertEqual(json.loads(path.read_text())[0]["warning_level"],"none")
+        red = {**item,"automatic_warning_level":"confirmed","warning_level":"confirmed","alarm_revision":1}
+        server.save_local_archive(jid,[red])
+        self.assertEqual(json.loads(path.read_text())[0]["warning_level"],"confirmed")
+        self.assertEqual(self.client.post(f"/api/jobs/{jid}/archive/L001/confirm",json={"confirmed":False}).status_code,200)
+        server.save_local_archive(jid,[red])
+        self.assertEqual(json.loads(path.read_text())[0]["warning_level"],"suspected")
+        server.save_local_archive(jid,[{**red,"alarm_revision":2}])
+        result=json.loads(path.read_text())[0]
+        self.assertEqual(result["warning_level"],"confirmed")
+        self.assertEqual(result["warning_source"],"automatic")
     def test_each_vehicle_requires_its_own_folder(self):
         for i in range(4):
             (self.videos / f"arbitrary-{i}.mp4").touch()

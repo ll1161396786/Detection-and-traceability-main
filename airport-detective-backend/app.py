@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 from flask import Flask, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException
 from engine import ROOT, MODEL_NAMES, Detector, cv2, hardware
-from analytics import SceneAnalyzer, draw_scene
+from analytics import SceneAnalyzer, draw_scene, merge_warning
 import imageio_ffmpeg
 
 DATA = ROOT / "data"
@@ -90,12 +90,16 @@ def save_local_archive(jid, candidates):
                 "probability": max(saved.get("probability", 0), owner["probability"]),
                 "near_frames": max(saved.get("near_frames", 0), owner.get("near_frames", 0)),
             }
+        first_owner = candidate.get("first_owner_id", previous.get("first_owner_id"))
+        current_owner = candidate.get("current_owner_id", previous.get("current_owner_id"))
+        for owner in owners.values():
+            owner["is_first_owner"] = owner["person_id"] == first_owner
+            owner["is_current_owner"] = owner["person_id"] == current_owner
         records[candidate["id"]] = {
             **previous, **candidate,
-            "warning_level": "confirmed" if previous.get("warning_level") == "confirmed" else
-                "suspected" if previous.get("warning_level") == "suspected" or candidate.get("risk") == "high" or candidate.get("warning_level") == "suspected" else "none",
+            **merge_warning(previous, candidate),
             "stationary_seconds": max(previous.get("stationary_seconds", 0), candidate.get("stationary_seconds", 0)),
-            "owners": sorted(owners.values(), key=lambda owner: owner["probability"], reverse=True),
+            "owners": sorted(owners.values(), key=lambda owner: (not owner["is_current_owner"], not owner["is_first_owner"], -owner["probability"])),
         }
     json_write(path, sorted(records.values(), key=lambda item: item["id"]))
 
@@ -368,7 +372,11 @@ def confirm_abandoned(jid, candidate_id):
         body = request.get_json(silent=True) or {}
         if not isinstance(body, dict) or not isinstance(body.get("confirmed", True), bool):
             return jsonify(error="确认状态必须为布尔值"), 400
+        item.setdefault("automatic_warning_level", item.get("warning_level", "none"))
         item["warning_level"] = "confirmed" if body.get("confirmed", True) else "suspected"
+        item["manual_warning_level"] = item["warning_level"]
+        item["manual_alarm_revision"] = item.get("alarm_revision", 0)
+        item["warning_source"] = "manual"
         item["confirmed_at"] = datetime.now().isoformat(timespec="seconds") if body.get("confirmed", True) else None
         json_write(path, records)
         return job_archive(jid)

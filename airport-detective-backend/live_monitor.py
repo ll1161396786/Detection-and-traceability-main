@@ -199,8 +199,8 @@ class ShuttleMonitor:
                             # Confirmation changes the live bounding box to red as well.
                             with self.s.lock:
                                 archive_path = folder / "archive.json"
-                                confirmed = {c["id"] for c in json.loads(archive_path.read_text(encoding="utf-8")) if c.get("warning_level") == "confirmed"} if archive_path.exists() else set()
-                                drawn = [{**c, "risk": "high", "warning_level": "confirmed"} if c["id"] in confirmed else c for c in candidates]
+                                levels = {c["id"]: c.get("warning_level", "none") for c in json.loads(archive_path.read_text(encoding="utf-8"))} if archive_path.exists() else {}
+                                drawn = [{**c, "warning_level": levels.get(c["id"], c.get("warning_level", "none"))} for c in candidates]
                                 annotated = draw_scene(annotated, boxes, drawn)
                                 self.s.write_jpeg(folder / "preview.jpg", annotated)
                                 self.s.update(jid, frame=stream["frame"], processed=stream["processed"], time=round(timestamp, 2),

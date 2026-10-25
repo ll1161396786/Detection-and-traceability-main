@@ -83,15 +83,16 @@ async function refreshLibrary(){
 }
 
 function candidatesFor(job){return job.status==='completed'?(job.candidate_summary||job.luggage_candidates||[]):(job.luggage_candidates||[])}
+function candidateWarningClass(item){return item.warning_level==='confirmed'?'high':item.warning_level==='suspected'?'medium':item.warning_level==='none'?'low':item.risk||'low'}
 function renderCandidates(candidates,job){
-  const alerts=candidates.filter(c=>c.risk==='high').length;const people=new Set(candidates.flatMap(c=>(c.owners||[]).map(o=>o.person_id)));
+  const alerts=candidates.filter(c=>candidateWarningClass(c)==='high').length;const people=new Set(candidates.flatMap(c=>(c.owners||[]).map(o=>o.person_id)));
   $('candidateCount').textContent=candidates.length;$('ownerCount').textContent=people.size;
   if(!candidates.length){const archived=job?.candidate_summary||[];$('candidateList').innerHTML=`<div class="empty-state"><span>⌁</span><h3>${job?.processed?'当前未检出行李候选':'等待视频分析'}</h3><p>持续检测背包、手提包与行李箱，并关联附近人员。</p></div>`;if(!archived.length)selectedCandidateId=null;renderOwners(null,job);renderTimeline([],job);renderArchive(archived,job);return}
-  if(!candidates.some(c=>c.id===selectedCandidateId))selectedCandidateId=(candidates.find(c=>c.risk==='high')||candidates[0]).id;
-  $('candidateList').innerHTML=candidates.map(c=>`<button class="candidate ${c.risk} ${c.id===selectedCandidateId?'selected':''}" data-candidate="${c.id}"><img src="/api/jobs/${job.id}/crops/${c.crop}" alt="${escapeHtml(c.label_zh)} ${c.id}" onerror="this.alt='照片暂不可用'"><span class="candidate-body"><span class="candidate-top"><b class="candidate-name">${c.id} · ${escapeHtml(c.label_zh)}</b><span class="candidate-state">${c.state}</span></span><p>${escapeHtml(c.reason)}</p><span class="candidate-meta"><span>静止 <b>${Number(c.stationary_seconds).toFixed(1)}s</b></span><span>出现 <b>${fmtTime(c.first_seen)}</b></span></span></span></button>`).join('');
+  if(!candidates.some(c=>c.id===selectedCandidateId))selectedCandidateId=(candidates.find(c=>candidateWarningClass(c)==='high')||candidates[0]).id;
+  $('candidateList').innerHTML=candidates.map(c=>`<button class="candidate ${candidateWarningClass(c)} ${c.id===selectedCandidateId?'selected':''}" data-candidate="${c.id}"><img src="/api/jobs/${job.id}/crops/${c.crop}" alt="${escapeHtml(c.label_zh)} ${c.id}" onerror="this.alt='照片暂不可用'"><span class="candidate-body"><span class="candidate-top"><b class="candidate-name">${c.id} · ${escapeHtml(c.label_zh)}</b><span class="candidate-state">${c.state}</span></span><p>${escapeHtml(c.reason)}</p><span class="candidate-meta"><span>静止 <b>${Number(c.stationary_seconds).toFixed(1)}s</b></span><span>出现 <b>${fmtTime(c.first_seen)}</b></span></span></span></button>`).join('');
   const selectedItem=candidates.find(c=>c.id===selectedCandidateId);renderOwners(selectedItem,job);renderTimeline(candidates,job);renderArchive(job?.candidate_summary||candidates,job);
   $('alertBanner').classList.toggle('active',alerts>0);
-  if(alerts){$('alertTitle').textContent=`发现 ${alerts} 个疑似遗留物，建议人工复核`;$('alertDescription').textContent='物品达到静止阈值，且稳定所属人不在近邻范围内。'}
+  if(alerts){$('alertTitle').textContent=`发现 ${alerts} 个遗留红警，建议人工复核`;$('alertDescription').textContent='包裹连续5帧满足遗留条件，或已经人工确认；请核查证据。'}
   else{$('alertTitle').textContent=candidates.some(c=>c.state==='持续观察')?'行李关系持续分析中':'当前行李均有较强近邻关联';$('alertDescription').textContent='系统正在结合静止时长、空间距离与跨帧共同出现证据更新研判。'}
 }
 
@@ -131,10 +132,10 @@ function renderArchiveRows(records,job){
   if(!records.length){$('archiveRows').innerHTML='<div class="archive-empty-row"><span>▣</span><div><b>暂无归档记录</b><small>识别到包裹后将在此新增固定记录行</small></div></div>';return}
   const rows=records.map((item,index)=>{
     const owners=item.owners||[];
-    return `<article id="archive-${item.id}" tabindex="-1" class="archive-row ${item.warning_level==='confirmed'?'high':item.warning_level==='suspected'?'medium':item.risk||'medium'} ${focusedPackageId===item.id?'archive-highlight':''}" role="row" data-package-id="${item.id}">
+    return `<article id="archive-${item.id}" tabindex="-1" class="archive-row ${candidateWarningClass(item)} ${focusedPackageId===item.id?'archive-highlight':''}" role="row" data-package-id="${item.id}">
       <div class="archive-package-cell" role="cell"><span class="archive-row-number">${String(index+1).padStart(2,'0')}</span><img loading="lazy" decoding="async" src="/api/jobs/${job.id}/crops/${item.crop}" alt="${escapeHtml(item.label_zh)} ${item.id}" onerror="this.alt='照片暂不可用'"><div><b>${item.id} · ${escapeHtml(item.label_zh)}</b><small>${escapeHtml(item.reason||'已建立跨帧包裹记录')}</small></div></div>
       <div class="archive-detection-cell" role="cell"><span>首次检出<b>${fmtTime(item.first_seen)}</b></span><span>最后检出<b>${fmtTime(item.last_seen)}</b></span><span>静止时长<b>${Number(item.stationary_seconds||0).toFixed(1)} 秒</b></span></div>
-      <div class="archive-state-cell" role="cell"><span class="archive-risk ${item.warning_level==='confirmed'?'high':item.warning_level==='suspected'?'medium':item.risk||'medium'}"><i></i>${item.warning_level==='confirmed'?'确认遗留':item.warning_level==='suspected'?'疑似遗留':escapeHtml(item.state||'持续观察')}</span><small>${owners.length} 名关联候选</small></div>
+      <div class="archive-state-cell" role="cell"><span class="archive-risk ${candidateWarningClass(item)}"><i></i>${item.warning_level==='confirmed'?'确认遗留':item.warning_level==='suspected'?'疑似遗留':escapeHtml(item.state||'持续观察')}</span><small>${owners.length} 名关联候选</small></div>
       <div class="archive-owner-cell" role="cell">${owners.length?owners.map(owner=>archiveOwner(owner,job)).join(''):'<div class="archive-owner-empty"><span>?</span><div><b>暂无稳定所属人</b><small>保留包裹记录，继续等待关联</small></div></div>'}</div>
     </article>`;
   });
