@@ -96,7 +96,7 @@ class LiveMonitorTest(unittest.TestCase):
         self.assertEqual(self.client.post(f"/api/jobs/{jid}/archive/L001/confirm", json={"confirmed": False}).status_code, 200)
         self.assertTrue(all(a["warning_level"] == "suspected" for a in self.monitor.state()["alerts"]))
 
-    def test_arbitrary_names_natural_order_and_exact_count(self):
+    def test_arbitrary_names_natural_order_and_maximum_count(self):
         folder = self.videos / "02"
         folder.mkdir()
         for name in ["旅行 10.MP4", "旅行 2.mp4", "旅行 1.mov", "旅行 3.mkv"]:
@@ -110,8 +110,7 @@ class LiveMonitorTest(unittest.TestCase):
             video_sources(server, "02")
         (folder / "第五个.avi").unlink()
         (folder / "旅行 3.mkv").unlink()
-        with self.assertRaisesRegex(ValueError, "当前找到 3 个"):
-            video_sources(server, "02")
+        self.assertEqual(len(video_sources(server, "02")[1]), 3)
 
     def test_automatic_red_persists_and_manual_review_is_scoped_to_event(self):
         jid = "a" * 32
@@ -136,15 +135,13 @@ class LiveMonitorTest(unittest.TestCase):
         for i in range(4):
             (self.videos / f"arbitrary-{i}.mp4").touch()
         for number in ["01", "03", "04"]:
-            with self.assertRaisesRegex(ValueError, f"videos/{number}/"):
-                video_sources(server, number)
+            self.assertEqual(video_sources(server, number)[1], [])
         (self.videos / "01").mkdir()
         for path in self.videos.glob("*.mp4"):
             path.rename(self.videos / "01" / path.name)
         self.assertEqual(video_sources(server, "01")[0], self.videos / "01")
         (self.videos / "04").mkdir()
-        with self.assertRaisesRegex(ValueError, "当前找到 0 个"):
-            video_sources(server, "04")
+        self.assertEqual(video_sources(server, "04")[1], [])
         with self.assertRaises(ValueError):
             video_sources(server, "../")
 
@@ -158,8 +155,81 @@ class LiveMonitorTest(unittest.TestCase):
         self.assertTrue(states["09"]["ready"])
         self.assertFalse(states["02"]["ready"])
         self.assertEqual(self.client.get("/api/shuttles/9/state").get_json()["trip_id"], "T-09")
-        self.assertEqual(self.client.post("/api/shuttles/02/start", json={}).status_code, 400)
+        self.assertEqual(self.client.post("/api/shuttles/02/start", json={}).status_code, 202)
         self.assertFalse(server.jobs)
+
+    def test_zero_to_four_inputs_create_only_connected_jobs_and_recover(self):
+        from unittest.mock import Mock
+        worker = Mock()
+        worker.is_alive.return_value = False
+        meta = {"fps":25,"duration":1,"frames":25}
+        with patch("live_monitor.threading.Thread",return_value=worker), patch.object(server,"video_info",return_value=meta):
+            for count in range(5):
+                with self.subTest(inputs=count):
+                    number = str(10+count)
+                    folder = self.videos / number
+                    folder.mkdir()
+                    for i in range(count):
+                        (folder / f"video {i}.mp4").touch()
+                    before = len(server.jobs)
+                    response = self.client.post(f"/api/shuttles/{number}/start",json={})
+                    self.assertEqual(response.status_code,202)
+                    state = response.get_json()
+                    self.assertEqual(len(server.jobs)-before,count)
+                    self.assertEqual(state["connected_count"],count)
+                    self.assertEqual([s["connected"] for s in state["camera_slots"]],[i<count for i in range(4)])
+                    self.assertEqual(len(ShuttleMonitor(server,number).state()["cameras"]),count)
+                    self.assertEqual(worker.start.call_count,max(0,count))
+                    for slot in state["camera_slots"][count:]:
+                        self.assertEqual(slot["message"],"当前未接通线路")
+                        self.assertIsNone(slot["job_id"])
+                    for job in server.jobs.values():
+                        job["status"]="cancelled"
+
+    def test_stopped_removed_inputs_disconnect_without_erasing_historical_jobs(self):
+        from unittest.mock import Mock
+        folder = self.videos / "02"
+        folder.mkdir()
+        for i in range(4):
+            (folder / f"video{i}.mp4").touch()
+        worker=Mock()
+        worker.is_alive.return_value=False
+        with patch("live_monitor.threading.Thread",return_value=worker), patch.object(server,"video_info",return_value={"fps":25,"duration":1,"frames":25}):
+            server.monitor.get("02").start()
+        for job in server.jobs.values():
+            job["status"]="cancelled"
+        for i in range(1,4):
+            (folder / f"video{i}.mp4").unlink()
+        state=self.client.get("/api/shuttles/02/state").get_json()
+        self.assertEqual(state["connected_count"],1)
+        self.assertEqual(len(state["cameras"]),4)
+        self.assertTrue(all(s["job_id"] is None for s in state["camera_slots"][1:]))
+
+    def test_real_partial_camera_preview_and_stop(self):
+        import numpy as np
+        folder=self.videos/"03"
+        folder.mkdir()
+        for i in range(2):
+            writer=cv2.VideoWriter(str(folder/f"任意文件名{i}.mp4"),cv2.VideoWriter_fourcc(*"mp4v"),25,(640,360))
+            self.assertTrue(writer.isOpened())
+            for _ in range(8):
+                writer.write(np.full((360,640,3),50+i*30,dtype=np.uint8))
+            writer.release()
+        self.monitor=ShuttleMonitor(server,"03")
+        started=self.monitor.start()
+        self.assertEqual(len(started["cameras"]),2)
+        deadline=time.monotonic()+20
+        while time.monotonic()<deadline:
+            state=self.monitor.state()
+            self.assertFalse(any(c["status"]=="failed" for c in state["cameras"]),state)
+            if all(c["preview_version"]>0 for c in state["cameras"]):
+                break
+            time.sleep(.1)
+        self.assertTrue(all(c["preview_version"]>0 for c in state["cameras"]),state)
+        for camera in state["cameras"]:
+            self.assertEqual(self.client.get(camera["preview"]).status_code,200)
+        self.monitor.stop()
+        self.monitor.worker.join(10)
 
     def test_vehicle_session_and_saved_camera_paths_are_isolated(self):
         from unittest.mock import Mock

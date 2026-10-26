@@ -13,6 +13,17 @@ function isLiveTrip(trip) { return /^T-[0-9]{2}$/.test(trip.id); }
 function monitorPath(action, trip = activeTrip) {
   return `/api/shuttles/${trip.id.slice(2)}/${action}`;
 }
+function liveCameraSlots() {
+  if (Array.isArray(liveState.camera_slots)) return liveState.camera_slots;
+  return [1, 2, 3, 4].map(id => {
+    const camera = liveState.cameras.find(c => c.id === id);
+    return { id, connected: Boolean(camera), job_id: camera?.job_id, source: camera?.source };
+  });
+}
+function liveCameraFor(id) {
+  const slot = liveCameraSlots().find(s => s.id === id);
+  return slot?.connected && slot.job_id ? liveState.cameras.find(c => c.id === id && c.job_id === slot.job_id) : null;
+}
 function resetLivePictures() {
   for (const controller of livePreviewRequests.values()) controller.abort();
   livePreviewRequests.clear();
@@ -74,6 +85,7 @@ function renderLiveVideoWall() {
     <button class="camera-thumb ${id === activeCameraId ? "active" : ""}" type="button" data-camera="${id}" aria-pressed="${id === activeCameraId}">
       <img class="cam-video camera-thumb-video live-frame" data-prediction="${id}" alt="摄像头 ${id} 等待模型" hidden />
       <span class="camera-thumb-shade"></span><span class="camera-thumb-live" data-live-status="${id}">等待模型</span>
+      <span class="camera-line-message" data-line-message="${id}" hidden>当前未接通线路</span>
       <span class="camera-thumb-label">摄像头 ${id}</span>
     </button>`).join("")}</div>
     <div class="live-controls"><button type="button" data-monitor="start">启动四路检测</button>
@@ -100,6 +112,25 @@ function selectLiveCamera(id) {
 
 function updateLivePictures() {
   if (!isLiveTrip(activeTrip)) return;
+  for (const [id, controller] of livePreviewRequests) {
+    if (liveCameraFor(id)?.job_id !== controller.jobId) { controller.abort(); livePreviewRequests.delete(id); }
+  }
+  for (const [id, picture] of livePictures) {
+    const camera = liveCameraFor(id);
+    if (!camera || !picture.version.startsWith(`${camera.job_id}:`)) {
+      URL.revokeObjectURL(picture.url); livePictures.delete(id);
+    }
+  }
+  for (const id of [1, 2, 3, 4]) {
+    if (!livePictures.has(id)) {
+      const thumb = videoGrid.querySelector(`[data-prediction="${id}"]`);
+      if (thumb) { thumb.hidden = true; thumb.removeAttribute("src"); }
+    }
+  }
+  if (!livePictures.has(activeCameraId)) {
+    const main = videoGrid.querySelector("#mainCameraPrediction");
+    if (main) { main.hidden = true; main.removeAttribute("src"); }
+  }
   livePictures.forEach((picture, id) => {
     const thumb = videoGrid.querySelector(`[data-prediction="${id}"]`);
     if (thumb && thumb.getAttribute("src") !== picture.url) { thumb.src = picture.url; thumb.hidden = false; thumb.alt = `摄像头 ${id} YOLOv10 实时预测结果`; }
@@ -116,24 +147,28 @@ function updateLiveStatus() {
   if (!isLiveTrip(activeTrip)) return;
   const online = liveState.cameras.filter(c => c.status === "running" && c.preview_version > 0).length;
   wallStatus.textContent = liveConnectionError ? "后端连接中断" : `${online}/4 模型运行中`;
-  liveState.cameras.forEach(c => {
-    const thumb = videoGrid.querySelector(`[data-camera="${c.id}"]`);
-    if (thumb) thumb.title = `摄像头 ${c.id} · ${c.source}`;
-    const label = videoGrid.querySelector(`[data-live-status="${c.id}"]`);
-    if (label) label.textContent = liveConnectionError ? "连接中断" : c.status === "running" ? `预测 ${c.fps} fps` : c.status === "loading" ? "加载模型" : c.status === "failed" ? "检测失败" : "已停止";
+  liveCameraSlots().forEach(slot => {
+    const c = liveCameraFor(slot.id);
+    const thumb = videoGrid.querySelector(`[data-camera="${slot.id}"]`);
+    if (thumb) { thumb.title = slot.connected ? `摄像头 ${slot.id} · ${slot.source}` : "当前未接通线路"; thumb.classList.toggle("line-disconnected", !slot.connected); }
+    const offline = videoGrid.querySelector(`[data-line-message="${slot.id}"]`);
+    if (offline) { offline.hidden = slot.connected || Boolean(liveConnectionError); }
+    const label = videoGrid.querySelector(`[data-live-status="${slot.id}"]`);
+    if (label) label.textContent = liveConnectionError ? "连接中断" : !slot.connected ? "未接通" : c?.status === "running" ? `预测 ${c.fps} fps` : c?.status === "loading" ? "加载模型" : c?.status === "failed" ? "检测失败" : c ? "已停止" : "待启动";
   });
-  const camera = liveState.cameras.find(c => c.id === activeCameraId);
+  const slot = liveCameraSlots().find(s => s.id === activeCameraId);
+  const camera = liveCameraFor(activeCameraId);
   const label = videoGrid.querySelector("#liveMainStatus");
-  if (label) label.textContent = liveConnectionError ? "连接中断 · 上次预测" : camera?.status === "running" ? `模型预测 · ${camera.video_time.toFixed(1)}s · 第 ${camera.cycle} 轮` : camera?.message || "等待模型";
+  if (label) label.textContent = liveConnectionError ? "连接中断 · 上次预测" : !slot?.connected ? "当前未接通线路" : camera?.status === "running" ? `模型预测 · ${camera.video_time.toFixed(1)}s · 第 ${camera.cycle} 轮` : camera?.message || "待启动检测";
   const frameMessage = videoGrid.querySelector("#liveFrameMessage");
   if (frameMessage) {
-    frameMessage.hidden = livePictures.has(activeCameraId);
-    frameMessage.textContent = liveConnectionError || (!liveState.cameras.length && liveState.configuration_error) || camera?.message || "点击启动四路检测";
+    frameMessage.hidden = Boolean(slot?.connected && livePictures.has(activeCameraId));
+    frameMessage.textContent = liveConnectionError || (!slot?.connected ? "当前未接通线路" : camera?.message || "点击启动四路检测");
   }
   const message = videoGrid.querySelector("#liveMonitorMessage");
-  if (message) message.textContent = liveConnectionError || (!liveState.cameras.length && liveState.configuration_error) || (liveState.status === "running" ? "" : liveState.cameras.length ? "检测已停止 · 保留警报档案" : "放入四个视频后启动检测");
+  if (message) message.textContent = liveConnectionError || liveState.configuration_error || (liveState.status === "running" ? "" : liveState.ready === false ? "当前未接通线路" : "点击启动检测 · 最多四路");
   videoGrid.querySelectorAll("[data-monitor]").forEach(button => {
-    button.disabled = liveControlBusy || liveClearBusy || (button.dataset.monitor === "start" ? liveState.status === "running" || liveState.cameras.some(c => ["loading", "running"].includes(c.status)) : liveState.status !== "running");
+    button.disabled = liveControlBusy || liveClearBusy || (button.dataset.monitor === "start" ? liveState.ready === false || liveState.status === "running" || liveState.cameras.some(c => ["loading", "running"].includes(c.status)) : liveState.status !== "running");
   });
 }
 
@@ -166,10 +201,12 @@ function renderLiveItems() {
 
 async function loadLivePreview(camera) {
   const tripId = activeTrip.id;
+  if (liveCameraFor(camera.id)?.job_id !== camera.job_id) return;
   if (liveClearBusy || camera.archive_cleared || !camera.preview_version || livePreviewRequests.has(camera.id)) return;
   const version = `${camera.job_id}:${camera.preview_version}`;
   if (livePictures.get(camera.id)?.version === version) return;
   const controller = new AbortController();
+  controller.jobId = camera.job_id;
   livePreviewRequests.set(camera.id, controller);
   const timeout = setTimeout(() => controller.abort(), 8000);
   try {
@@ -181,7 +218,7 @@ async function loadLivePreview(camera) {
       const decoded = new Image();
       decoded.src = url;
       await decoded.decode();
-      if (tripId !== activeTrip.id || controller.signal.aborted || liveClearBusy || !liveState.cameras.some(c => c.id === camera.id && c.job_id === camera.job_id && !c.archive_cleared)) { URL.revokeObjectURL(url); return; }
+      if (tripId !== activeTrip.id || controller.signal.aborted || liveClearBusy || liveCameraFor(camera.id)?.job_id !== camera.job_id || camera.archive_cleared) { URL.revokeObjectURL(url); return; }
       const old = livePictures.get(camera.id);
       livePictures.set(camera.id, { url, version });
       updateLivePictures();
@@ -211,6 +248,7 @@ async function pollLiveState() {
       }
     }
     liveState = liveStates.get(activeTrip.id) || { trip_id: activeTrip.id, cameras: [], alerts: [], status: "idle" };
+    updateLivePictures();
     if (!liveModelInitialized) {
       const model = document.querySelector("#modelSelector");
       if (model && liveState.model) model.value = liveState.model;

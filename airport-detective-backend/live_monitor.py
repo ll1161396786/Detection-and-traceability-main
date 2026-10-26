@@ -21,21 +21,25 @@ def shuttle_number(value):
 
 
 def video_sources(server, number):
-    """Every vehicle reads exactly four videos from its own numbered folder."""
+    """Read up to four local inputs; an absent/empty folder has no connected lines."""
     number = shuttle_number(number)
     folder = server.VIDEOS / number
-    if not folder.is_dir() or folder.is_symlink() or folder.resolve().parent != server.VIDEOS.resolve():
-        raise ValueError(f"请在 videos/{number}/ 放入四个视频，文件名不限。")
+    if folder.is_symlink() or folder.resolve().parent != server.VIDEOS.resolve():
+        raise ValueError(f"无效的视频目录 videos/{number}/。")
+    if not folder.exists():
+        return folder, []
+    if not folder.is_dir():
+        raise ValueError(f"videos/{number}/ 必须是文件夹。")
     def natural_key(path):
         return ([ (1, int(part)) if part.isdigit() else (0, part.casefold())
                   for part in re.split(r"([0-9]+)", path.name) ], path.name)
     sources = sorted((path for path in folder.iterdir()
                       if path.is_file() and not path.is_symlink() and not path.name.startswith(".")
                       and path.suffix.lower() in server.EXTENSIONS), key=natural_key)
-    if len(sources) != 4:
+    if len(sources) > 4:
         relative = folder.relative_to(server.VIDEOS).as_posix()
         label = "videos/" if relative == "." else f"videos/{relative}/"
-        raise ValueError(f"接驳车 {number}：{label} 需要恰好四个视频，当前找到 {len(sources)} 个；文件名不限。")
+        raise ValueError(f"接驳车 {number}：{label} 最多支持四个视频，当前找到 {len(sources)} 个；请移出多余视频。")
     return folder, sources
 
 
@@ -52,7 +56,7 @@ class ShuttleMonitor:
         if saved.exists():
             try:
                 previous = json.loads(saved.read_text(encoding="utf-8"))
-                if len(previous.get("cameras", [])) == 4 and all(c["job_id"] in server.jobs for c in previous["cameras"]):
+                if 1 <= len(previous.get("cameras", [])) <= 4 and all(c["job_id"] in server.jobs for c in previous["cameras"]):
                     self.session = previous
             except (ValueError, KeyError, OSError):
                 logging.exception("Unable to recover the previous four-camera session")
@@ -99,9 +103,11 @@ class ShuttleMonitor:
                 if self.stop_event.is_set():
                     raise ValueError("检测正在停止，请稍后再启动。")
                 return self.state()
+            folder, sources = video_sources(self.s, self.number)
+            if not sources:
+                return self.state()  # No jobs or GPU worker for disconnected lines.
             if any(j["status"] not in self.s.TERMINAL for j in self.s.jobs.values()):
                 raise ValueError("已有其他车辆或识别任务正在运行，请先停止该任务再启动四路监控。")
-            folder, sources = video_sources(self.s, self.number)
             metas = [self.s.video_info(source) for source in sources]
             self.session = {"trip_id": f"T-{self.number}", "id": uuid.uuid4().hex, "model": model,
                             "source_directory": folder.relative_to(self.s.VIDEOS).as_posix(),
@@ -247,14 +253,27 @@ class ShuttleFleet:
         monitor = self.get(number)
         state = monitor.state()
         state["shuttle_id"] = monitor.number
+        sources = []
         try:
             folder, sources = video_sources(self.s, monitor.number)
-            state.update(ready=True, configuration_error="",
+            state.update(ready=bool(sources), configuration_error="",
                          source_directory="videos/" + (folder.relative_to(self.s.VIDEOS).as_posix().strip(".") + "/").lstrip("/"),
                          source_videos=[p.name for p in sources])
         except ValueError as exc:
             state.update(ready=False, configuration_error=str(exc), source_videos=[],
                          source_directory=f"videos/{monitor.number}/")
+        worker = monitor.worker
+        active = worker is not None and worker.is_alive()
+        slots = []
+        for camera_id in range(1, 5):
+            camera = next((c for c in state["cameras"] if c["id"] == camera_id), None)
+            source = camera["source"] if active and camera else sources[camera_id-1].name if not active and camera_id <= len(sources) else None
+            matching_job = camera if source and camera and camera["source"] == source and (
+                active or camera.get("source_path", f"{monitor.number}/{source}") == f"{monitor.number}/{source}") else None
+            slots.append({"id": camera_id, "connected": source is not None, "source": source,
+                          "job_id": matching_job["job_id"] if matching_job else None,
+                          "message": "" if source else "当前未接通线路"})
+        state.update(camera_slots=slots, connected_count=sum(slot["connected"] for slot in slots))
         return state
 
     def states(self):

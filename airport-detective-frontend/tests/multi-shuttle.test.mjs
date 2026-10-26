@@ -10,7 +10,7 @@ function setup() {
     if (!nodes.has(key)) nodes.set(key, {
       value: 'yolov10n.pt', dataset: {}, classList: { add() {}, remove() {}, toggle() {} },
       addEventListener() {}, querySelector: node, querySelectorAll: () => [],
-      setAttribute() {}, removeAttribute() {}, style: { setProperty() {} },
+      setAttribute(key, value) { this[key] = value; }, getAttribute(key) { return this[key] ?? null; }, removeAttribute(key) { delete this[key]; }, style: { setProperty() {} },
       getBoundingClientRect: () => ({ width: 100, height: 100 }),
     });
     return nodes.get(key);
@@ -25,14 +25,47 @@ function setup() {
   const live = readFileSync(new URL('../live-client.js', import.meta.url), 'utf8');
   const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   vm.runInContext(live + '\n' + app.slice(0, app.lastIndexOf('\nrenderVideoWall();')), context);
-  vm.runInContext(`globalThis.realRenderTrips = renderTrips; globalThis.realRenderLiveItems = renderLiveItems; renderTrips = () => {}; renderCurrentTrip = () => {};
+  vm.runInContext(`globalThis.realRenderTrips = renderTrips; globalThis.realRenderLiveItems = renderLiveItems;
+    globalThis.realUpdateLiveStatus = updateLiveStatus; globalThis.realUpdateLivePictures = updateLivePictures;
+    renderTrips = () => {}; renderCurrentTrip = () => {};
     renderLiveVideoWall = () => {}; renderLiveItems = () => {};
     updateHeaderControls = () => {}; updateLiveStatus = () => {}; showToast = () => {};`, context);
-  return { context, revoked, run: text => vm.runInContext(text, context) };
+  return { context, revoked, node, run: text => vm.runInContext(text, context) };
 }
 const state = (number, overrides = {}) => ({ trip_id: `T-${number}`, shuttle_id: number,
   cameras: [], alerts: [], status: 'idle', model: 'yolov10n.pt', ready: true, ...overrides });
 const response = data => ({ ok: true, json: async () => data });
+
+test('zero to three connected sources leave the remaining thumbnails and main window disconnected', () => {
+  for (let count = 0; count < 4; count++) {
+    const { context, node, run } = setup();
+    const cameras = Array.from({length:count}, (_, i) => ({ id:i+1,job_id:`job${i+1}`,source:`original${i}.mkv`,status:'running',preview_version:1,fps:10 }));
+    context.fixture = state('01',{ready:count>0,cameras,camera_slots:Array.from({length:4},(_,i)=>({id:i+1,connected:i<count,job_id:i<count?`job${i+1}`:null,source:i<count?`original${i}.mkv`:null}))});
+    run('liveState=fixture; activeCameraId=4; realUpdateLivePictures(); realUpdateLiveStatus()');
+    assert.equal(node('#liveFrameMessage').textContent,'当前未接通线路');
+    assert.equal(node('#liveFrameMessage').hidden,false);
+    for (let id = 1; id <= 4; id++) {
+      assert.equal(node(`[data-line-message="${id}"]`).hidden,id<=count);
+      assert.equal(node(`[data-live-status="${id}"]`).textContent,id<=count?'预测 10 fps':'未接通');
+    }
+  }
+});
+
+test('disconnected historical camera cannot keep an old frame or download another preview', async () => {
+  const { context, node, revoked, run } = setup();
+  context.fixture = state('01',{ready:false,cameras:[{id:1,job_id:'old',preview_version:2,preview:'/old',status:'cancelled'}],
+    camera_slots:[1,2,3,4].map(id=>({id,connected:false,job_id:null}))});
+  context.fetch=async()=>{throw new Error('Disconnected camera must not download');};
+  node('#mainCameraPrediction').src='blob:stale';
+  node('[data-prediction="1"]').src='blob:stale';
+  run('liveState=fixture; activeCameraId=1; livePictures.set(1,{url:"blob:stale",version:"old:2"}); realUpdateLivePictures(); realUpdateLiveStatus()');
+  assert.equal(node('#mainCameraPrediction').hidden,true);
+  assert.equal(node('#mainCameraPrediction').src,undefined);
+  assert.equal(node('[data-prediction="1"]').src,undefined);
+  assert.deepEqual(revoked,['blob:stale']);
+  await run('loadLivePreview(liveState.cameras[0])');
+  assert.equal(run('livePreviewRequests.size'),0);
+});
 
 test('default selection is 01 and the fleet list sorts existing and discovered numbers', () => {
   const { run } = setup();

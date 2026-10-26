@@ -18,6 +18,9 @@
 .model-choice select:disabled { opacity: .65; cursor: not-allowed; }
 .live-frame { object-fit: contain; background: #080d0b; }
 .live-frame-message { position: absolute; inset: 0; display: grid; place-content: center; color: var(--muted); padding: 24px; text-align: center; }
+.camera-line-message { position: absolute; inset: 0; display: grid; place-items: center; padding: 10px; color: var(--muted); font-size: 12px; text-align: center; pointer-events: none; z-index: 2; }
+.camera-line-message[hidden] { display: none; }
+.camera-thumb.line-disconnected { background: #10181e; }
 .live-controls { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 11px; color: var(--muted); }
 .live-controls button, .live-confirm { border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); padding: 5px 8px; cursor: pointer; font-size: 11px; }
 .live-controls button:disabled, .live-confirm:disabled { opacity: .5; cursor: default; }
