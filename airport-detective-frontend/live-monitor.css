@@ -16,7 +16,7 @@
 .model-choice { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 .model-choice select { max-width: 185px; padding: 9px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--text); font: inherit; }
 .model-choice select:disabled { opacity: .65; cursor: not-allowed; }
-.live-frame { object-fit: contain; background: #080d0b; }
+.live-frame { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; background: #080d0b; }
 .live-frame-message { position: absolute; inset: 0; display: grid; place-content: center; color: var(--muted); padding: 24px; text-align: center; }
 .camera-line-message { position: absolute; inset: 0; display: grid; place-items: center; padding: 10px; color: var(--muted); font-size: 12px; text-align: center; pointer-events: none; z-index: 2; }
 .camera-line-message[hidden] { display: none; }

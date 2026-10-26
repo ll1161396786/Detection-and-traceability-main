@@ -135,8 +135,8 @@ h3 {
 .workspace {
   grid-area: main;
   display: grid;
-  /* 左列（视频墙 + 车次列表）略窄于右列分析面板：0.9 : 1 */
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr);
+  /* 扩大实时画面所在左列，保留右侧警报分析空间。 */
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
   gap: 10px;
   min-width: 0;
   min-height: 0;
@@ -298,11 +298,11 @@ h3 {
   color: var(--green);
 }
 
-/* ===== 主画面 + 四路实时缩略图 + 静态接驳车地图 ===== */
+/* ===== 全宽主画面 + 四路实时缩略图 ===== */
 .video-content {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 7fr) minmax(180px, 3fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
   gap: 12px;
 }
@@ -314,64 +314,6 @@ h3 {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto;
   gap: 8px;
-}
-
-.shuttle-map-card {
-  position: relative;
-  min-width: 0;
-  min-height: 0;
-  margin: 0;
-  overflow: hidden;
-  border: 1px solid rgba(120, 216, 255, 0.34);
-  border-radius: 10px;
-  background: #dfe5df;
-  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.24);
-}
-
-.shuttle-map-image {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
-  object-fit: cover;
-  object-position: center;
-}
-
-.shuttle-map-card::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(180deg, rgba(7, 14, 12, 0.34), transparent 20%);
-}
-
-.shuttle-map-caption {
-  position: absolute;
-  z-index: 1;
-  top: 9px;
-  left: 9px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  border: 1px solid rgba(114, 216, 151, 0.32);
-  border-radius: 999px;
-  background: rgba(11, 24, 20, 0.82);
-  color: #e9fff1;
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 0.04em;
-  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.22);
-  backdrop-filter: blur(5px);
-}
-
-.map-caption-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--green);
-  box-shadow: 0 0 8px rgba(114, 216, 151, 0.8);
 }
 
 .cam-cell {
@@ -397,6 +339,8 @@ h3 {
 
 .cam-main {
   width: 100%;
+  /* 高度随窗口变化，为班次标题和可滚动列表保留空间。 */
+  max-height: clamp(240px, calc(100dvh - 580px), 600px);
   border-color: rgba(120, 216, 255, 0.34);
   box-shadow: 0 16px 34px rgba(0, 0, 0, 0.24);
 }
@@ -1457,13 +1401,7 @@ h3 {
   .video-grid {
     width: 100%;
   }
-  .shuttle-map-card {
-    min-height: 220px;
-    aspect-ratio: 16 / 7;
-  }
-  .shuttle-map-image {
-    object-position: center 48%;
-  }
+  .cam-main { max-height: none; }
   .left-rail {
     align-self: stretch;
   }

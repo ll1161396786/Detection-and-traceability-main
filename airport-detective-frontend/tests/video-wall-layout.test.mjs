@@ -40,11 +40,12 @@ test("camera selection updates the main feed and exactly one thumbnail state", (
   );
 });
 
-test("camera stage uses the left 70 percent beside the static shuttle map", () => {
+test("camera stage occupies the full left panel with a wider workspace allocation", () => {
   assert.match(
     styles,
-    /\.video-content\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*7fr\)\s+minmax\(180px,\s*3fr\);/s
+    /\.video-content\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s
   );
+  assert.match(styles,/\.workspace\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1\.15fr\)\s+minmax\(0,\s*1fr\);/s);
   assert.match(styles, /\.video-grid\s*\{[^}]*width:\s*100%;/s);
   assert.match(styles, /\.camera-strip\s*\{[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\);/s);
   assert.match(styles, /\.camera-thumb\.active\s*\{[^}]*border-color:\s*var\(--cyan\);[^}]*box-shadow:/s);

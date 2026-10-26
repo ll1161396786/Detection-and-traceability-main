@@ -227,9 +227,44 @@ class LiveMonitorTest(unittest.TestCase):
             time.sleep(.1)
         self.assertTrue(all(c["preview_version"]>0 for c in state["cameras"]),state)
         for camera in state["cameras"]:
-            self.assertEqual(self.client.get(camera["preview"]).status_code,200)
+            preview=self.client.get(camera["preview"])
+            self.assertEqual(preview.status_code,200)
+            decoded=cv2.imdecode(np.frombuffer(preview.data,dtype=np.uint8),cv2.IMREAD_COLOR)
+            self.assertEqual(decoded.shape[:2],(360,640))
         self.monitor.stop()
         self.monitor.worker.join(10)
+
+    def test_real_hd_preview_preserves_1080p_and_uses_high_jpeg_quality(self):
+        import numpy as np
+        for number,(width,height) in enumerate([(1920,1080),(2560,1440)],5):
+            with self.subTest(source=(width,height)):
+                folder=self.videos/f"{number:02d}"
+                folder.mkdir()
+                writer=cv2.VideoWriter(str(folder/"高清测试.mp4"),cv2.VideoWriter_fourcc(*"mp4v"),25,(width,height))
+                self.assertTrue(writer.isOpened())
+                for _ in range(4):
+                    frame=np.full((height,width,3),90,dtype=np.uint8)
+                    cv2.rectangle(frame,(20,20),(width-20,height-20),(0,220,255),4)
+                    writer.write(frame)
+                writer.release()
+                self.monitor=ShuttleMonitor(server,f"{number:02d}")
+                with patch.object(server,"write_jpeg",wraps=server.write_jpeg) as publish:
+                    self.monitor.start()
+                    deadline=time.monotonic()+20
+                    state=self.monitor.state()
+                    while time.monotonic()<deadline and not state["cameras"][0]["preview_version"]:
+                        self.assertNotEqual(state["cameras"][0]["status"],"failed",state)
+                        time.sleep(.1)
+                        state=self.monitor.state()
+                    self.assertGreater(state["cameras"][0]["preview_version"],0,state)
+                    response=self.client.get(state["cameras"][0]["preview"])
+                    decoded=cv2.imdecode(np.frombuffer(response.data,dtype=np.uint8),cv2.IMREAD_COLOR)
+                    self.assertEqual(decoded.shape[:2],(1080,1920))
+                    self.monitor.stop()
+                    self.monitor.worker.join(10)
+                    calls=[call for call in publish.call_args_list if call.args[0].name=="preview.jpg"]
+                    self.assertTrue(calls)
+                    self.assertTrue(all(call.kwargs.get("quality",0)>=95 for call in calls))
 
     def test_vehicle_session_and_saved_camera_paths_are_isolated(self):
         from unittest.mock import Mock

@@ -13,6 +13,9 @@ from flask import jsonify, request
 from analytics import SceneAnalyzer, draw_scene
 from engine import Detector, cv2, MODEL_NAMES, ROOT
 
+LIVE_PREVIEW_MAX_EDGE = 1920
+LIVE_PREVIEW_JPEG_QUALITY = 95
+
 
 def shuttle_number(value):
     if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,2}", value) or int(value) == 0:
@@ -181,9 +184,9 @@ class ShuttleMonitor:
                             stream["cycle"] += 1
                         stream["frame"] += 1
                         h, w = frame.shape[:2]
-                        scale = min(1., 1280 / max(w, h))
+                        scale = min(1., LIVE_PREVIEW_MAX_EDGE / max(w, h))
                         if scale < 1:
-                            frame = cv2.resize(frame, (int(w*scale), int(h*scale)))
+                            frame = cv2.resize(frame, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_AREA)
                         h, w = frame.shape[:2]
                         annotated, boxes = detector.predict(frame, job["options"], device)
                         timestamp = (stream["frame"] - 1) / job["source"]["fps"]
@@ -208,7 +211,7 @@ class ShuttleMonitor:
                                 levels = {c["id"]: c.get("warning_level", "none") for c in json.loads(archive_path.read_text(encoding="utf-8"))} if archive_path.exists() else {}
                                 drawn = [{**c, "warning_level": levels.get(c["id"], c.get("warning_level", "none"))} for c in candidates]
                                 annotated = draw_scene(annotated, boxes, drawn)
-                                self.s.write_jpeg(folder / "preview.jpg", annotated)
+                                self.s.write_jpeg(folder / "preview.jpg", annotated, quality=LIVE_PREVIEW_JPEG_QUALITY)
                                 self.s.update(jid, frame=stream["frame"], processed=stream["processed"], time=round(timestamp, 2),
                                               cycle=stream["cycle"], preview_version=stream["processed"],
                                               progress=round(100*stream["frame"]/max(1, job["source"]["frames"]), 1),
