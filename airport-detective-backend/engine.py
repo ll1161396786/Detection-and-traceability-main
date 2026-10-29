@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "vendor"))
 import cv2
 import torch
 from ultralytics import YOLOv10
+from analytics import box_iou
 
 ZH = dict(zip(
     range(80),
@@ -59,20 +60,77 @@ class Detector:
             self.key = (name, actual)
         return actual
 
-    def predict(self, frame, options, device):
-        result = self.model.predict(frame, conf=options["confidence"],
-                                    imgsz=options["imgsz"], device=device,
-                                    classes=[0, 24, 26, 28] if options["scope"] == "luggage" else None,
+    def _infer_boxes(self, frame, options, device, packages_only=False):
+        # Preserve every source pixel. Pad only the bottom/right to the model's
+        # stride so Ultralytics' letterbox has a gain of exactly 1, even for odd sizes.
+        height, width = frame.shape[:2]
+        stride_value = self.model.model.stride
+        stride = int(stride_value.max()) if hasattr(stride_value, "max") else int(stride_value)
+        pad_h, pad_w = (-height) % stride, (-width) % stride
+        model_frame = cv2.copyMakeBorder(frame, 0, pad_h, 0, pad_w, cv2.BORDER_CONSTANT,
+                                        value=(114, 114, 114)) if pad_h or pad_w else frame
+        retrieval=min(options["confidence"],.12) if options["confidence"]<=.35 else options["confidence"]
+        result = self.model.predict(model_frame, conf=retrieval,
+                                    imgsz=list(model_frame.shape[:2]), rect=False, device=device,
+                                    classes=[24,26,28] if packages_only else [0, 24, 26, 28] if options["scope"] == "luggage" else None,
                                     verbose=False, save=False)[0]
         boxes = []
         for box in result.boxes.cpu().numpy():
             cls = int(box.cls[0])
+            if cls not in {24,26,28} and float(box.conf[0])<options["confidence"]:
+                continue
+            if packages_only and cls not in {24,26,28}:
+                continue
+            x1, y1, x2, y2 = [float(v) for v in box.xyxy[0]]
+            xyxy = [max(0., min(width, x1)), max(0., min(height, y1)),
+                    max(0., min(width, x2)), max(0., min(height, y2))]
+            if xyxy[2] <= xyxy[0] or xyxy[3] <= xyxy[1]:
+                continue  # A padding-only detection has no corresponding source pixels.
             boxes.append({"class_id": cls, "label": result.names[cls], "label_zh": ZH.get(cls, result.names[cls]),
                           "confidence": round(float(box.conf[0]), 4),
-                          "xyxy": [round(float(v), 2) for v in box.xyxy[0]]})
+                          "xyxy": [round(v, 2) for v in xyxy]})
+        return boxes
+
+    def predict(self, frame, options, device):
+        boxes=self._infer_boxes(frame,options,device)
+        height,width=frame.shape[:2]
+        packages=[b for b in boxes if b['class_id'] in {24,26,28}]
+        # Supplemental original-pixel views around the two largest foreground
+        # people. They change context, never stretch/upscale a package or invent it.
+        if options.get('package_refine',True) and width>=960 and height>=540 and max((b['confidence'] for b in packages),default=0)<.45:
+            people=sorted((b for b in boxes if b['class_id']==0 and b['confidence']>=.5
+                           and b['xyxy'][3]-b['xyxy'][1]>.4*height),
+                          key=lambda b:(b['xyxy'][2]-b['xyxy'][0])*(b['xyxy'][3]-b['xyxy'][1]),reverse=True)
+            regions=[]
+            for person in people:
+                if any(box_iou(person['xyxy'],old)>.65 for old in regions):
+                    continue
+                regions.append(person['xyxy'])
+                x1,y1,x2,y2=person['xyxy'];bw=x2-x1;bh=y2-y1
+                left=max(0,int(x1-.25*bw));top=max(0,int(y1+.18*bh))
+                right=min(width,int(x2+.25*bw));bottom=min(height,int(y2+.05*bh))
+                for box in self._infer_boxes(frame[top:bottom,left:right],options,device,packages_only=True):
+                    bx1,by1,bx2,by2=box['xyxy']
+                    # Reject cut-off ROI-border objects; the full-frame detector
+                    # remains responsible for objects outside the supplementary view.
+                    if bx1<2 or by1<2 or bx2>right-left-2 or by2>bottom-top-2:
+                        continue
+                    box['xyxy']=[bx1+left,by1+top,bx2+left,by2+top]
+                    box['detection_source']='person_context'
+                    boxes.append(box)
+                if len(regions)>=2:break
+        fused=[]
+        for box in sorted(boxes,key=lambda b:-b['confidence']):
+            if any((old['class_id']==box['class_id'] or old['class_id'] in {24,26,28} and box['class_id'] in {24,26,28})
+                   and box_iou(old['xyxy'],box['xyxy'])>.65 for old in fused):
+                continue
+            fused.append(box)
+        boxes=fused
         # OpenCV draws English labels reliably without downloading any font.
         annotated = frame.copy()
         for b in boxes:
+            if b['confidence']<options['confidence']:
+                continue  # Weak candidates must earn temporal support before display.
             x1, y1, x2, y2 = [int(v) for v in b["xyxy"]]
             color = (160, 220, 80) if b["class_id"] == 0 else (70, 188, 255)
             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)

@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app as server
-from engine import ROOT, cv2
+from engine import ROOT, cv2, Detector
 from live_monitor import ShuttleMonitor, video_sources
 
 
@@ -248,7 +248,8 @@ class LiveMonitorTest(unittest.TestCase):
                     writer.write(frame)
                 writer.release()
                 self.monitor=ShuttleMonitor(server,f"{number:02d}")
-                with patch.object(server,"write_jpeg",wraps=server.write_jpeg) as publish:
+                with patch.object(server,"write_jpeg",wraps=server.write_jpeg) as publish, \
+                        patch("live_monitor.Detector.predict", autospec=True, side_effect=Detector.predict) as predict:
                     self.monitor.start()
                     deadline=time.monotonic()+20
                     state=self.monitor.state()
@@ -265,6 +266,11 @@ class LiveMonitorTest(unittest.TestCase):
                     calls=[call for call in publish.call_args_list if call.args[0].name=="preview.jpg"]
                     self.assertTrue(calls)
                     self.assertTrue(all(call.kwargs.get("quality",0)>=95 for call in calls))
+                    self.assertTrue(predict.call_args_list)
+                    self.assertTrue(all(call.args[1].shape[:2] == (height,width) for call in predict.call_args_list))
+                    job=server.jobs[state["cameras"][0]["job_id"]]
+                    self.assertEqual(job["options"]["imgsz"],"source")
+                    self.assertEqual((job["output_width"],job["output_height"]),(width,height))
 
     def test_vehicle_session_and_saved_camera_paths_are_isolated(self):
         from unittest.mock import Mock

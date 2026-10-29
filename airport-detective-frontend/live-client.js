@@ -31,6 +31,7 @@ function resetLivePictures() {
   livePictures.clear();
 }
 function activateLiveTrip() {
+  resetEventReplay();
   resetLivePictures();
   liveState = liveStates.get(activeTrip.id) || { trip_id: activeTrip.id, cameras: [], alerts: [], status: "idle" };
   liveSelectedKey = null;
@@ -184,17 +185,18 @@ function renderLiveItems() {
     const isConfirmed = item.warning_level === "confirmed";
     const level = isConfirmed ? "danger" : "suspected";
     return `<article class="item-row ${level} ${item.key === liveSelectedKey ? "active" : ""}" data-live-key="${escapeHtml(item.key)}">
-      <div class="item-identity"><img class="item-thumb" src="${item.package_photo}" alt="${item.id} 遗留物截图" loading="lazy" tabindex="0" role="button" aria-haspopup="dialog" title="点击放大照片" />
+      <div class="item-identity"><img class="item-thumb" src="${item.package_photo}" alt="${item.id} 遗留物截图" loading="lazy" tabindex="0" role="button" aria-label="播放 ${item.id} 事件视频" title="点击播放事件前后各 2 秒视频" />
         <div class="item-meta"><div class="item-title"><strong>CAM-${item.camera_id} · ${item.id}</strong>
-          <span class="row-flag ${level}">${isConfirmed ? item.warning_source === "manual" ? "人工确认" : "遗留红警" : item.transfer_count ? "所属关系变化" : "黄色警告"}</span></div>
+          <span class="row-flag ${level}">${isConfirmed ? item.warning_source === "manual" ? "人工确认" : "遗留红警" : (item.handoff_requires_review || !item.transfer_count && item.suspected_transfer_count) ? "疑似转交 · 待复核" : item.transfer_count ? "所属关系变化" : "黄色警告"}</span></div>
           <p class="item-name">${escapeHtml(item.label_zh)}</p>
           <span class="row-sub">${escapeHtml(activeTrip.no)} · 静止 ${item.stationary_seconds}s</span>
           <p class="live-reason" title="${escapeHtml(item.reason)}">${escapeHtml(item.reason)}</p>
+          <div class="item-evidence-actions"><button type="button" data-replay-item>▶ 事件回放</button><button type="button" data-item-photo>放大照片</button></div>
           <button class="live-confirm" type="button" data-confirm-job="${item.job_id}" data-confirm-item="${item.id}" data-confirmed="${!isConfirmed}">${isConfirmed ? "撤销红警" : "人工确认遗留"}</button>
         </div></div>
       <div class="owner-list">${item.owners.length ? item.owners.slice(0, 3).map(owner => `
         <div class="owner-card" title="所属人关联分数，需人工复核"><img class="owner-avatar" src="${owner.photo}" alt="CAM-${item.camera_id} ${owner.person_id} 可能所属人截图" loading="lazy" tabindex="0" role="button" aria-haspopup="dialog" title="点击放大照片" />
-          <div class="owner-body"><div class="owner-top"><strong>${owner.person_id}</strong><span class="owner-score">${Math.round(owner.probability * 100)}%</span></div><span class="owner-name">${owner.is_current_owner ? owner.present ? "当前关联人" : "最近关联人" : owner.is_first_owner ? "首位关联人" : "历史关联人"} · 关联分数</span></div></div>`).join("") : '<span class="live-empty-owner">暂无所属人关联证据</span>'}</div>
+          <div class="owner-body"><div class="owner-top"><strong>${owner.person_id}</strong><span class="owner-score">${Math.round(owner.probability * 100)}%</span></div><span class="owner-name">${owner.is_current_owner ? owner.present ? "当前关联人" : "最近关联人" : owner.is_first_owner ? "首位关联人" : item.owner_history?.includes(owner.person_id) ? "历史关联人" : "候选关联人"} · 关联分数</span></div></div>`).join("") : '<span class="live-empty-owner">暂无所属人关联证据</span>'}</div>
     </article>`;
   }).join("") : `<p class="live-empty">${liveConnectionError ? "后端连接中断，等待恢复" : "暂无遗留物警报"}</p>`;
 }
@@ -277,6 +279,7 @@ async function controlLiveMonitor(action) {
     liveStates.set(activeTrip.id, liveState);
     liveConnectionError = "";
     if (action === "start") {
+      resetEventReplay();
       resetLivePictures();
       renderLiveVideoWall();
     }
@@ -286,6 +289,7 @@ async function controlLiveMonitor(action) {
 
 async function clearLiveCache() {
   if (liveClearBusy || liveControlBusy) return;
+  resetEventReplay();
   liveClearBusy = true;
   updateLiveStatus();
   let cleared = 0;
@@ -325,6 +329,7 @@ async function clearLiveCache() {
 
 async function initializeLiveMonitor() {
   initializeItemPhotoPreview();
+  initializeEventReplay();
   document.querySelector("#clearCacheButton").addEventListener("click", () => { void clearLiveCache(); });
   videoGrid.addEventListener("click", event => {
     const button = event.target.closest("[data-monitor]");
@@ -345,7 +350,7 @@ async function initializeLiveMonitor() {
     if (row) {
       liveSelectedKey = row.dataset.liveKey;
       const item = liveState.alerts.find(a => a.key === liveSelectedKey);
-      if (item) selectLiveCamera(item.camera_id);
+      if (item) { selectLiveCamera(item.camera_id); void playEventReplay(item); }
       renderLiveItems();
     }
   });
@@ -359,13 +364,18 @@ function initializeItemPhotoPreview() {
   dialog.className = "item-photo-dialog";
   dialog.setAttribute("aria-labelledby", "itemPhotoPreviewTitle");
   dialog.innerHTML = `<div class="item-photo-heading"><strong id="itemPhotoPreviewTitle">遗留物照片</strong><button type="button" aria-label="关闭照片预览" autofocus>关闭 ×</button></div>
-    <div class="item-photo-content"><img alt="" hidden /><p role="status">正在加载照片…</p></div>`;
+    <div class="item-photo-content"><img alt="" hidden /><p role="status">正在加载照片…</p></div>
+    <div class="item-photo-toolbar"><p class="item-photo-details" hidden></p><button type="button" class="item-photo-native" title="按原始像素查看，可在图像区域滚动" hidden>原图 100%</button></div>`;
   document.body.append(dialog);
   const picture = dialog.querySelector("img");
   const status = dialog.querySelector("[role=status]");
+  const details = dialog.querySelector(".item-photo-details");
+  const content = dialog.querySelector(".item-photo-content");
+  const nativeButton = dialog.querySelector(".item-photo-native");
   let returnFocus = null;
-  picture.addEventListener("load", () => { picture.hidden = false; status.hidden = true; });
-  picture.addEventListener("error", () => { picture.hidden = true; status.hidden = false; status.textContent = "照片暂时无法加载，可能已被清理。"; });
+  picture.addEventListener("load", () => { picture.hidden = false; status.hidden = true; details.hidden = false; details.textContent = `原图 ${picture.naturalWidth} × ${picture.naturalHeight} 像素`; nativeButton.hidden = false; });
+  picture.addEventListener("error", () => { picture.hidden = true; details.hidden = true; nativeButton.hidden = true; status.hidden = false; status.textContent = "照片暂时无法加载，可能已被清理。"; });
+  nativeButton.addEventListener("click", () => { nativeButton.textContent = content.classList.toggle("native-size") ? "适应窗口" : "原图 100%"; });
   dialog.querySelector("button").addEventListener("click", () => dialog.close());
   dialog.addEventListener("click", event => {
     if (event.target !== dialog) return;
@@ -381,6 +391,10 @@ function initializeItemPhotoPreview() {
     event.preventDefault();
     event.stopImmediatePropagation();
     returnFocus = image;
+    content.classList.remove("native-size");
+    nativeButton.textContent = "原图 100%";
+    nativeButton.hidden = true;
+    details.hidden = true;
     picture.hidden = true;
     status.hidden = false;
     status.textContent = "正在加载照片…";
@@ -391,10 +405,85 @@ function initializeItemPhotoPreview() {
   };
   // Capture before the existing row-selection handlers, including dynamically refreshed rows.
   itemList.addEventListener("click", event => {
-    const image = event.target.closest("img.item-thumb, img.owner-avatar");
+    const image = event.target.closest("img.owner-avatar") || (event.target.closest("[data-item-photo]")?.closest("[data-live-key]")?.querySelector("img.item-thumb"));
     if (image) openPhoto(event, image);
   }, true);
   itemList.addEventListener("keydown", event => {
-    if ((event.key === "Enter" || event.key === " ") && event.target.matches("img.item-thumb, img.owner-avatar")) openPhoto(event, event.target);
+    if ((event.key === "Enter" || event.key === " ") && event.target.matches("img.owner-avatar")) openPhoto(event, event.target);
   }, true);
+}
+
+let replayRequest = null;
+let replaySelection = null;
+let replayVersion = 0;
+
+function resetEventReplay() {
+  replayVersion += 1;
+  replayRequest?.abort();
+  replayRequest = null;
+  replaySelection = null;
+  const video = document.querySelector("#eventReplay");
+  if (!video) return;
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+  video.hidden = true;
+  document.querySelector("#replayStatus").hidden = false;
+  document.querySelector("#replayStatus").textContent = "尚未选择遗留物";
+  document.querySelector("#replayTitle").textContent = "点击上方遗留物，查看报警帧前后各 2 秒的原始视频";
+  document.querySelector("#replayTiming").textContent = "片段通常为 4 秒；首尾按源视频可用长度截取";
+  document.querySelector("#replayClose").hidden = true;
+  document.querySelector("#replayRetry").hidden = true;
+}
+
+async function playEventReplay(item) {
+  resetEventReplay();
+  const version = replayVersion;
+  const trip = activeTrip.id;
+  replaySelection = { ...item };
+  const controller = new AbortController();
+  replayRequest = controller;
+  const timeout = setTimeout(() => controller.abort(), 75000);
+  const video = document.querySelector("#eventReplay");
+  const status = document.querySelector("#replayStatus");
+  document.querySelector("#replayTitle").textContent = `${activeTrip.no} · CAM-${item.camera_id} · ${item.id} · 报警事件原始视频`;
+  document.querySelector("#replayClose").hidden = false;
+  status.textContent = "正在准备事件视频…";
+  try {
+    const response = await fetch(`/api/jobs/${item.job_id}/archive/${item.id}/replay`, { method: "POST", signal: controller.signal });
+    const clip = await response.json();
+    if (!response.ok) throw new Error(clip.error || "回放加载失败");
+    if (version !== replayVersion || trip !== activeTrip.id || liveClearBusy) return;
+    document.querySelector("#replayTiming").textContent = `源视频 ${clip.start.toFixed(2)}–${clip.end.toFixed(2)} 秒 · 共 ${clip.duration.toFixed(2)} 秒 · 报警帧位于片段 ${clip.event_offset.toFixed(2)} 秒`;
+    video.src = clip.url;
+    video.hidden = false;
+    status.hidden = true;
+    try { await video.play(); } catch { /* Native controls remain available if autoplay is blocked. */ }
+  } catch (error) {
+    if (version !== replayVersion || trip !== activeTrip.id) return;
+    status.hidden = false;
+    status.textContent = controller.signal.aborted ? "回放准备超时，请重新加载。" : error.message;
+    document.querySelector("#replayRetry").hidden = false;
+  } finally {
+    clearTimeout(timeout);
+    if (replayRequest === controller) replayRequest = null;
+  }
+}
+
+function initializeEventReplay() {
+  document.querySelector("#replayClose").addEventListener("click", resetEventReplay);
+  document.querySelector("#replayRetry").addEventListener("click", () => { if (replaySelection) void playEventReplay(replaySelection); });
+  document.querySelector("#eventReplay").addEventListener("error", () => {
+    if (!replaySelection) return;
+    document.querySelector("#eventReplay").hidden = true;
+    document.querySelector("#replayStatus").hidden = false;
+    document.querySelector("#replayStatus").textContent = "视频无法播放，可能已清理；请重新加载。";
+    document.querySelector("#replayRetry").hidden = false;
+  });
+  itemList.addEventListener("keydown", event => {
+    if ((event.key === "Enter" || event.key === " ") && event.target.matches("img.item-thumb")) {
+      event.preventDefault();
+      event.target.click();
+    }
+  });
 }

@@ -32,6 +32,17 @@
         </div>
       </header>
 
+      <section class="col hazard-panel reference-libraries" aria-label="危险物品与常见物品库">
+        <div class="catalog-row catalog-row-hazard">
+          <div class="catalog-label"><p class="eyebrow">Hazard Items</p><h2>危险物品库</h2><span class="catalog-count" id="hazardCount"></span></div>
+          <div class="catalog-track" id="hazardGrid" role="list" tabindex="0" aria-label="危险物品图片列表"></div>
+        </div>
+        <div class="catalog-row catalog-row-luggage">
+          <div class="catalog-label"><p class="eyebrow">Common Items</p><h2>常见物品库</h2><span class="catalog-count" id="luggageCount"></span></div>
+          <div class="catalog-track" id="luggageGrid" role="list" tabindex="0" aria-label="常见物品图片列表"></div>
+        </div>
+      </section>
+
       <!-- 主体：左侧四路视频田字格 + 右侧安全分析面板 -->
       <main class="workspace">
         <!-- 左列：视频田字格 + 车次列表 -->
@@ -119,26 +130,6 @@
 
         <!-- 右侧安全分析面板：常见危险物 / 遗留物清单 / 异常行为分析 -->
         <aside class="right-rail" aria-label="安全分析面板">
-          <!-- 危险物品与常见行李资料库（上，两条横向目录） -->
-          <section class="col hazard-panel" aria-label="危险物品与常见行李库">
-            <div class="catalog-row catalog-row-hazard">
-              <div class="catalog-label">
-                <p class="eyebrow">Hazard Items</p>
-                <h2>危险物品库</h2>
-                <span class="catalog-count" id="hazardCount"></span>
-              </div>
-              <div class="catalog-track" id="hazardGrid" role="list" tabindex="0" aria-label="危险物品图片列表"></div>
-            </div>
-            <div class="catalog-row catalog-row-luggage">
-              <div class="catalog-label">
-                <p class="eyebrow">Common Luggage</p>
-                <h2>常见行李库</h2>
-                <span class="catalog-count" id="luggageCount"></span>
-              </div>
-              <div class="catalog-track" id="luggageGrid" role="list" tabindex="0" aria-label="常见行李图片列表"></div>
-            </div>
-          </section>
-
           <!-- 遗留物清单 + 可能所属人（中） -->
           <section class="col items-panel" aria-label="遗留物清单">
             <div class="panel-head">
@@ -153,6 +144,16 @@
               <span>可能所属人 · 按置信度排序，最多 3 名</span>
             </div>
             <div class="item-list" id="itemList"></div>
+          </section>
+
+          <section class="col replay-panel" aria-label="遗留物事件回放">
+            <div class="panel-head"><div><p class="eyebrow">Event Replay</p><h2>遗留物事件回放</h2></div><button id="replayClose" type="button" hidden>关闭回放</button></div>
+            <p id="replayTitle" class="replay-description">点击上方遗留物，查看报警帧前后各 2 秒的原始视频</p>
+            <div class="replay-stage">
+              <video id="eventReplay" controls playsinline muted preload="metadata" hidden aria-label="遗留物事件短视频"></video>
+              <p id="replayStatus" role="status">尚未选择遗留物</p>
+            </div>
+            <div class="replay-footer"><span id="replayTiming">片段通常为 4 秒；首尾按源视频可用长度截取</span><button id="replayRetry" type="button" hidden>重新加载</button></div>
           </section>
 
           <!-- 异常行为分析（下） -->

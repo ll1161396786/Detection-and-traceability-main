@@ -21,6 +21,7 @@ from werkzeug.exceptions import HTTPException
 from engine import ROOT, MODEL_NAMES, Detector, cv2, hardware
 from analytics import SceneAnalyzer, draw_scene, merge_warning
 import imageio_ffmpeg
+from person_photos import quality as person_photo_quality, improves as improves_person_photo, JPEG_QUALITY as PERSON_JPEG_QUALITY
 
 DATA = ROOT / "data"
 VIDEOS = ROOT / "videos"
@@ -101,6 +102,14 @@ def save_local_archive(jid, candidates):
             "stationary_seconds": max(previous.get("stationary_seconds", 0), candidate.get("stationary_seconds", 0)),
             "owners": sorted(owners.values(), key=lambda owner: (not owner["is_current_owner"], not owner["is_first_owner"], -owner["probability"])),
         }
+        # Snapshot the triggering frame, rather than the continually advancing last_seen.
+        if candidate.get("alarm_frame") and jobs[jid]["source"].get("video_path"):
+            replay = records[candidate["id"]].get("replay", {})
+            if replay.get("revision") != candidate.get("alarm_revision"):
+                records[candidate["id"]]["replay"] = {
+                    "frame": candidate["alarm_frame"], "revision": candidate["alarm_revision"],
+                    "time": (candidate["alarm_frame"] - 1) / jobs[jid]["source"]["fps"],
+                }
     json_write(path, sorted(records.values(), key=lambda item: item["id"]))
 
 
@@ -275,7 +284,7 @@ def start_job():
         raise ValueError("无效的请求参数。")
     try:
         opts = {"model": body.get("model", "yolov10n.pt"), "device": body.get("device", "auto"),
-                "confidence": float(body.get("confidence", .25)), "imgsz": int(body.get("imgsz", 640)),
+                "confidence": float(body.get("confidence", .25)), "imgsz": "source",
                 "stride": int(body.get("stride", 1)), "scope": body.get("scope", "all"),
                 "linger_seconds": float(body.get("linger_seconds", 3))}
     except (TypeError, ValueError):
@@ -283,7 +292,7 @@ def start_job():
     if any(not isinstance(opts[key], str) for key in ("model", "device", "scope")):
         raise ValueError("识别参数无效。")
     if (opts["model"] not in MODEL_NAMES or opts["device"] not in {"auto", "cpu", "0"}
-            or not .05 <= opts["confidence"] <= .95 or opts["imgsz"] not in {320, 640, 960}
+            or not .05 <= opts["confidence"] <= .95
             or opts["stride"] not in {1, 2, 5, 10} or opts["scope"] not in {"all", "luggage"}):
         raise ValueError("识别参数不在支持范围内。")
     if not math.isfinite(opts["linger_seconds"]) or not 1 <= opts["linger_seconds"] <= 120:
@@ -345,9 +354,9 @@ def job_archive(jid):
         for candidate in json.loads(path.read_text(encoding="utf-8")):
             item = dict(candidate)
             item.setdefault("warning_level", "suspected" if item.get("risk") == "high" else "none")
-            item["package_photo"] = f"/api/jobs/{jid}/crops/{candidate['crop']}"
+            item["package_photo"] = f"/api/jobs/{jid}/crops/{candidate.get('event_crop', candidate['crop'])}"
             item["owners"] = [
-                {**owner, "photo": f"/api/jobs/{jid}/people/person-{owner['person_id']}.jpg"}
+                {**owner, "photo": person_photo_url(jid,owner['person_id'])}
                 for owner in candidate.get("owners", [])
             ]
             records.append(item)
@@ -415,7 +424,7 @@ def artifact(jid, name):
 
 @app.get("/api/jobs/<jid>/crops/<name>")
 def candidate_crop(jid, name):
-    if jid not in jobs or jobs[jid].get("archive_cleared") or not re.fullmatch(r"crop-L\d{3,}\.jpg", name or ""):
+    if jid not in jobs or jobs[jid].get("archive_cleared") or not re.fullmatch(r"crop-L\d{3,}(?:-event-\d+)?\.jpg", name or ""):
         return jsonify(error="候选物截图不存在"), 404
     path = DATA / "jobs" / jid / "crops" / name
     if not path.is_file():
@@ -427,10 +436,19 @@ def candidate_crop(jid, name):
 def person_crop(jid, name):
     if jid not in jobs or jobs[jid].get("archive_cleared") or not re.fullmatch(r"person-P\d{3,}\.jpg", name or ""):
         return jsonify(error="人员截图不存在"), 404
-    path = DATA / "jobs" / jid / "people" / name
-    if not path.is_file():
-        return jsonify(error="人员截图不存在"), 404
-    return send_file(path, conditional=True)
+    from io import BytesIO
+    with lock:
+        path = DATA / "jobs" / jid / "people" / name
+        if not path.is_file() or jobs[jid].get('archive_cleared'):
+            return jsonify(error="人员截图不存在"), 404
+        return send_file(BytesIO(path.read_bytes()),mimetype='image/jpeg')
+
+
+def person_photo_url(jid,person_id):
+    path=DATA/'jobs'/jid/'people'/f'person-{person_id}.jpg'
+    try:version=f'?v={path.stat().st_mtime_ns}'
+    except OSError:version=''
+    return f'/api/jobs/{jid}/people/person-{person_id}.jpg{version}'
 
 
 def evidence_index(jid):
@@ -574,13 +592,20 @@ def save_person_crop(folder, frame, box, width, height):
     if not re.fullmatch(r"P\d{3,}", track_id):
         return
     path = folder / "people" / f"person-{track_id}.jpg"
-    if path.exists():
-        return
     x1, y1, x2, y2 = [int(v) for v in box["xyxy"]]
     pad_x, pad_y = max(12, (x2 - x1) // 8), max(12, (y2 - y1) // 12)
     crop = frame[max(0, y1-pad_y):min(height, y2+pad_y), max(0, x1-pad_x):min(width, x2+pad_x)]
-    if crop.size:
-        write_jpeg(path, crop)
+    if not crop.size:return
+    metadata=path.with_suffix('.json')
+    proposed=person_photo_quality(crop,box.get('confidence',.9))
+    with lock:
+        previous=None
+        if path.exists() and metadata.exists():
+            try:previous=json.loads(metadata.read_text(encoding='utf-8'))
+            except (ValueError,OSError):pass
+        if not improves_person_photo(proposed,previous):return
+        write_jpeg(path,crop,quality=PERSON_JPEG_QUALITY)
+        json_write(metadata,proposed)
 
 
 def save_evidence_snapshot(folder, frame, sequence):
@@ -594,7 +619,7 @@ def save_evidence_snapshot(folder, frame, sequence):
 
 def remove_photo_archive(folder):
     resolved_folder = folder.resolve()
-    for name in ("crops", "people", "evidence-frames"):
+    for name in ("crops", "people", "evidence-frames", "replays"):
         path = (folder / name).resolve()
         if path.parent == resolved_folder and path.is_dir():
             shutil.rmtree(path)
@@ -612,8 +637,7 @@ def run_job(jid, source):
         device = detector.load(opts["model"], opts["device"])
         check_cancel(jid)
         cap = cv2.VideoCapture(str(source))
-        scale = min(1., 1280 / max(meta["width"], meta["height"]))
-        w, h = [max(2, int(v * scale) // 2 * 2) for v in (meta["width"], meta["height"])]
+        w, h = meta["width"], meta["height"]
         writer = cv2.VideoWriter(str(folder / "working.avi"), cv2.VideoWriter_fourcc(*"MJPG"),
                                  meta["fps"] / opts["stride"], (w, h))
         if not writer.isOpened():
@@ -643,14 +667,14 @@ def run_job(jid, source):
                 if (frame_index - 1) % opts["stride"]:
                     continue
                 if frame.shape[1] != w or frame.shape[0] != h:
-                    frame = cv2.resize(frame, (w, h))
+                    raise ValueError("视频在播放中改变了分辨率，请先转换为固定分辨率视频。")
                 last_source_frame = frame
                 t0 = time.monotonic()
                 annotated, boxes = detector.predict(frame, opts, device)
                 infer_seconds += time.monotonic() - t0
                 processed += 1
                 timestamp = (frame_index - 1) / meta["fps"]
-                boxes, candidates = analyzer.update(boxes, frame_index, timestamp, w, h)
+                boxes, candidates = analyzer.update(boxes, frame_index, timestamp, w, h, frame=frame)
                 annotated = draw_scene(annotated, boxes, candidates)
                 for box in boxes:
                     if box.get("class_id") == 0:
@@ -733,7 +757,7 @@ def run_job(jid, source):
         with lock:
             report = {**jobs[jid], "status": "completed", "message": "识别完成", "elapsed": round(time.monotonic() - started, 1),
                       "timeline": timeline, "notes": ["统计为逐帧检测结果，不是去重人数或物品数。", "遗留物与所属人由距离、共同出现和静止时长启发式推断，并非模型原生分类或身份识别。",
-                                                      "坐标相对于输出画面；输出长边最多 1280 像素。", "结果视频不含原音频；抽帧输出帧率为原帧率 / 抽帧间隔。"]}
+                                                      "推理保留源视频分辨率，仅在模型输入边缘补齐步长；坐标相对于源画面。", "结果视频不含原音频；抽帧输出帧率为原帧率 / 抽帧间隔。"]}
             json_write(folder / "report.json", report)
             update(jid, status="completed", message="识别完成，可播放或下载结果", elapsed=report["elapsed"],
                    artifacts=["result.mp4", "report.json", "detections.csv", "frames.jsonl"])
@@ -741,7 +765,7 @@ def run_job(jid, source):
         update(jid, message="正在停止检测，保留本地档案…")
     except Exception as exc:
         logging.exception("Job %s failed", jid)
-        message = "显存不足，请选择 yolov10n、降低识别尺寸或切换 CPU。" if "out of memory" in str(exc).lower() else str(exc)
+        message = "原分辨率推理显存不足，请选择 yolov10n 或切换 CPU。" if "out of memory" in str(exc).lower() else str(exc)
         update(jid, status="failed", message=message, elapsed=round(time.monotonic() - started, 1))
     finally:
         if process is not None and process.poll() is None:
@@ -760,6 +784,8 @@ def run_job(jid, source):
 import sys
 from live_monitor import register
 monitor = register(sys.modules[__name__])
+from event_replay import register_replay
+register_replay(sys.modules[__name__])
 
 
 if __name__ == "__main__":

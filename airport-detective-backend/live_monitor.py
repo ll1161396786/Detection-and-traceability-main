@@ -89,8 +89,8 @@ class ShuttleMonitor:
                         continue
                     alerts.append({**record, "key": f"{job['id']}:{record['id']}",
                                    "job_id": job["id"], "camera_id": camera["id"],
-                                   "package_photo": f"/api/jobs/{job['id']}/crops/{record['crop']}",
-                                   "owners": [{**owner, "photo": f"/api/jobs/{job['id']}/people/person-{owner['person_id']}.jpg"}
+                                   "package_photo": f"/api/jobs/{job['id']}/crops/{record.get('event_crop', record['crop'])}",
+                                   "owners": [{**owner, "photo": self.s.person_photo_url(job['id'],owner['person_id'])}
                                               for owner in record.get("owners", [])]})
             session["alerts"] = sorted(alerts, key=lambda a: (a["warning_level"] != "confirmed", a["camera_id"], a["id"]))
             return session
@@ -121,8 +121,11 @@ class ShuttleMonitor:
                 for child in ("crops", "people"):
                     (folder / child).mkdir(parents=True, exist_ok=True)
                 opts = {"model": model, "device": "auto", "confidence": .25,
-                        "imgsz": 640, "scope": "luggage", "stride": 1, "linger_seconds": 3}
-                self.s.jobs[jid] = {"id": jid, "created": self.session["created"], "source": {"name": sources[i-1].name, **meta},
+                        "imgsz": "source", "scope": "luggage", "stride": 1, "linger_seconds": 3}
+                source_stat = sources[i-1].stat()
+                self.s.jobs[jid] = {"id": jid, "created": self.session["created"], "source": {"name": sources[i-1].name, **meta,
+                                   "video_path": sources[i-1].relative_to(self.s.VIDEOS).as_posix(),
+                                   "mtime_ns": source_stat.st_mtime_ns},
                                    "options": opts, "train": {"number": f"接驳车 {self.number}", "route": "樟宜机场接驳线路", "carriage": self.number, "camera": f"CAM-{i:02d}"},
                                    "status": "loading", "message": "正在加载四路监控模型…", "live_camera": i,
                                    "progress": 0, "processed": 0, "frame": 0, "time": 0, "elapsed": 0,
@@ -184,16 +187,17 @@ class ShuttleMonitor:
                             stream["cycle"] += 1
                         stream["frame"] += 1
                         h, w = frame.shape[:2]
-                        scale = min(1., LIVE_PREVIEW_MAX_EDGE / max(w, h))
-                        if scale < 1:
-                            frame = cv2.resize(frame, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_AREA)
-                        h, w = frame.shape[:2]
                         annotated, boxes = detector.predict(frame, job["options"], device)
                         timestamp = (stream["frame"] - 1) / job["source"]["fps"]
                         # Use a monotonic video clock in the cumulative archive.
                         evidence_time = timestamp + (stream["cycle"] - 1) * job["source"]["duration"]
-                        boxes, candidates = stream["analyzer"].update(boxes, stream["frame"], evidence_time, w, h)
+                        boxes, candidates = stream["analyzer"].update(boxes, stream["frame"], evidence_time, w, h, frame=frame)
                         folder = self.s.DATA / "jobs" / jid
+                        for candidate in candidates:
+                            if candidate.get("alarm_frame"):
+                                candidate["event_crop"] = f"crop-{candidate['id']}-event-{candidate['alarm_revision']}.jpg"
+                                if candidate["alarm_frame"] == stream["frame"]:
+                                    self.s.save_candidate_crop(folder, frame, {**candidate, "crop": candidate["event_crop"]}, w, h)
                         for box in boxes:
                             if box["class_id"] == 0:
                                 self.s.save_person_crop(folder, frame, box, w, h)
@@ -211,6 +215,9 @@ class ShuttleMonitor:
                                 levels = {c["id"]: c.get("warning_level", "none") for c in json.loads(archive_path.read_text(encoding="utf-8"))} if archive_path.exists() else {}
                                 drawn = [{**c, "warning_level": levels.get(c["id"], c.get("warning_level", "none"))} for c in candidates]
                                 annotated = draw_scene(annotated, boxes, drawn)
+                                scale = min(1., LIVE_PREVIEW_MAX_EDGE / max(w, h))
+                                if scale < 1:
+                                    annotated = cv2.resize(annotated, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_AREA)
                                 self.s.write_jpeg(folder / "preview.jpg", annotated, quality=LIVE_PREVIEW_JPEG_QUALITY)
                                 self.s.update(jid, frame=stream["frame"], processed=stream["processed"], time=round(timestamp, 2),
                                               cycle=stream["cycle"], preview_version=stream["processed"],
@@ -223,7 +230,8 @@ class ShuttleMonitor:
                     except Exception as exc:
                         logging.exception("Camera %s failed", jid)
                         stream["failed"] = True
-                        self.s.update(jid, status="failed", message=str(exc))
+                        message = "原分辨率推理显存不足，请停止检测后选择较小的 YOLOv10 模型或使用 CPU。" if "out of memory" in str(exc).lower() else str(exc)
+                        self.s.update(jid, status="failed", message=message)
                 if not runnable:
                     break
                 self.stop_event.wait(.005)

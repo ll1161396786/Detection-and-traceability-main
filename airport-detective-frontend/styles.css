@@ -20,7 +20,8 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   background:
     radial-gradient(circle at top left, rgba(114, 216, 151, 0.16), transparent 32rem),
     linear-gradient(135deg, #0d1110 0%, #151a18 48%, #111719 100%);
@@ -79,18 +80,19 @@ h3 {
 /* ===== 总布局：顶栏 + 主区域 ===== */
 .app-shell {
   width: 100%;
-  height: 100vh;
-  height: 100dvh;
+  height: auto;
+  min-height: 100dvh;
   margin: 0;
   padding: 12px;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto;
   grid-template-areas:
     "topbar"
+    "libraries"
     "main";
   gap: 10px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 /* 顶栏：三列栅格（空列 | 标题 | 案件号），标题在整行正中，不受右侧状态块宽度影响 */
@@ -142,12 +144,12 @@ h3 {
   min-height: 0;
 }
 
-/* 左列：视频墙自适应内容高度，车次列表占满剩余高度并可滚动 */
+/* 左列随页面延伸，为下方车次列表保留足够高度。 */
 .left-rail {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(480px, 1fr);
   gap: 10px;
 }
 
@@ -261,12 +263,12 @@ h3 {
   letter-spacing: 0.02em;
 }
 
-/* 右侧安全分析面板：常见危险物 / 遗留物清单 / 异常行为分析 三段自上而下 */
+/* 右侧：警报、独立事件回放、异常行为。 */
 .right-rail {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1.15fr) minmax(0, 1fr);
+  grid-template-rows: 320px auto minmax(480px, 1fr);
   gap: 10px;
 }
 
@@ -279,7 +281,19 @@ h3 {
   gap: 8px;
 }
 
+.reference-libraries {
+  grid-area: libraries;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: auto;
+  gap: 20px;
+  padding: 8px 12px;
+}
+.reference-libraries .catalog-row { grid-template-columns: 115px minmax(0, 1fr); }
+.reference-libraries .catalog-label { min-height: 78px; }
+.reference-libraries .catalog-track { grid-auto-columns: 78px; grid-template-rows: 78px; }
+
 .behavior-panel {
+  min-height: 480px;
   grid-template-rows: auto minmax(0, 1fr);
 }
 
@@ -534,6 +548,7 @@ h3 {
 
 /* ===== 车次列表（四路摄像头模块下方） ===== */
 .trip-panel {
+  min-height: 480px;
   grid-template-rows: auto auto minmax(0, 1fr);
 }
 

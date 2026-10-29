@@ -32,13 +32,15 @@ test("common luggage catalog contains six referenced 640px PNG assets", () => {
 test("hazard and luggage titles precede their image tracks", () => {
   const hazardTitle = html.indexOf("<h2>危险物品库</h2>");
   const hazardTrack = html.indexOf('id="hazardGrid"');
-  const luggageTitle = html.indexOf("<h2>常见行李库</h2>");
+  const luggageTitle = html.indexOf("<h2>常见物品库</h2>");
   const luggageTrack = html.indexOf('id="luggageGrid"');
 
   assert.ok(hazardTitle >= 0 && hazardTitle < hazardTrack);
   assert.ok(luggageTitle > hazardTrack && luggageTitle < luggageTrack);
   assert.match(html, /id="hazardGrid"[^>]*role="list"[^>]*tabindex="0"/);
   assert.match(html, /id="luggageGrid"[^>]*role="list"[^>]*tabindex="0"/);
+  assert.ok(luggageTrack < html.indexOf('<main class="workspace">'));
+  assert.match(styles, /\.reference-libraries\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/s);
 });
 
 test("catalog tracks use double-width leading labels and remain single-row scrollers", () => {

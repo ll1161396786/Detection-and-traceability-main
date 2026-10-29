@@ -30,11 +30,14 @@ class AlarmLogicTest(unittest.TestCase):
             self.assertEqual(item["abandoned_frames"], count)
             self.assertEqual(item["warning_level"], "confirmed" if count == 5 else "none")
         revision = item["alarm_revision"]
+        event_frame, event_time = item["alarm_frame"], item["alarm_time"]
+        self.assertEqual(event_frame, self.frame)
         self.tick(bag=None)
         item = self.tick(timestamp=1.5)
         self.assertEqual(item["abandoned_frames"], 1)
         self.assertEqual(item["warning_level"], "confirmed")  # Historical event stays in archive.
         self.assertEqual(item["alarm_revision"], revision)
+        self.assertEqual((item["alarm_frame"], item["alarm_time"]), (event_frame, event_time))
 
     def test_missing_detection_breaks_streak(self):
         self.tick(timestamp=0)
@@ -65,11 +68,17 @@ class AlarmLogicTest(unittest.TestCase):
         self.assertEqual(item["warning_level"], "none")
         for step, x in enumerate([500,400,300,200,180,180,180,180]):
             item = self.tick(people=[(max(0,80-20*step),0,max(0,80-20*step)+80,200), (x,0,x+80,200), (600,300,680,400)])
+        for offset in range(0,34,3):
+            item = self.tick(people=[(0,0,80,200),(180+offset,0,260+offset,200),(600,300,680,400)],bag=(200+offset,220,240+offset,260))
         self.assertEqual(item["current_owner_id"], "P002")
         self.assertEqual(item["warning_level"], "suspected")
         self.assertEqual(item["transfer_count"], 1)
+        self.assertLessEqual(item["alarm_frame"], item["transfers"][-1]["frame"])
         for x,y in [(500,300),(400,300),(300,240),(200,180),(180,180),(180,180),(180,180)]:
-            item = self.tick(people=[(0,0,80,200), (180,0,260,200), (x,y,x+80,y+100)])
+            item = self.tick(people=[(0,0,80,200), (213,0,293,200), (x,y,x+80,y+100)],bag=(233,220,273,260))
+        for step in range(16):
+            offset=step*3
+            item=self.tick(people=[(0,0,80,200),(max(0,213-step*20),0,max(0,213-step*20)+80,200),(180+offset,180,260+offset,280)],bag=(233+offset,220,273+offset,260))
         self.assertEqual(item["first_owner_id"], "P001")
         self.assertEqual(item["current_owner_id"], "P003")
         self.assertEqual(item["owner_history"], ["P001","P002","P003"])

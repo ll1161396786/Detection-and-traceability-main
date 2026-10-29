@@ -10,6 +10,7 @@ function setup() {
     if (!nodes.has(key)) nodes.set(key, {
       value: 'yolov10n.pt', dataset: {}, classList: { add() {}, remove() {}, toggle() {} },
       addEventListener() {}, querySelector: node, querySelectorAll: () => [],
+      pause() {}, load() {}, play: async () => {},
       setAttribute(key, value) { this[key] = value; }, getAttribute(key) { return this[key] ?? null; }, removeAttribute(key) { delete this[key]; }, style: { setProperty() {} },
       getBoundingClientRect: () => ({ width: 100, height: 100 }),
     });
@@ -89,6 +90,17 @@ test('automatic red and transfer yellow show the correct badges and current hold
   assert.ok(markup.includes('所属关系变化'));
   assert.ok(markup.includes('当前关联人'));
   assert.equal(run('itemCount.textContent'),'红警 1 · 黄警 1');
+});
+
+test('a suspected handoff is labelled for review while its people remain candidates', () => {
+  const { context, run } = setup();
+  context.fixture=state('01',{alerts:[{id:'L006',camera_id:1,job_id:'job',key:'job:L006',
+    package_photo:'/photo',label_zh:'包',reason:'疑似转交',stationary_seconds:.2,warning_level:'suspected',
+    suspected_transfer_count:1,transfer_count:0,current_owner_id:null,owner_history:[],
+    owners:[{person_id:'P027',photo:'/person',probability:.9}]}]});
+  run('liveState=fixture;realRenderLiveItems()');
+  assert.match(run('itemList.innerHTML'),/疑似转交 · 待复核/);
+  assert.match(run('itemList.innerHTML'),/候选关联人/);
 });
 
 test('vehicles without old demo clips can select and start their own backend', async () => {
