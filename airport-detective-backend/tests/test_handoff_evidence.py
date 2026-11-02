@@ -14,14 +14,16 @@ class EarlyHandoffTest(unittest.TestCase):
     def seed(self):
         evidence=HandoffEvidence()
         for i in range(3):
-            self.assertIsNone(evidence.update([owner('P026',.96,.97),owner('P027',.92,.91)],(100,100),i*.04,i+1,1000))
+            self.assertIsNone(evidence.update([owner('P026',.96,.97),owner('P027',.82,.81)],(100,100),i*.04,i+1,1000))
         return evidence
 
     def test_sparse_observations_can_warn_before_formal_binding(self):
         evidence=self.seed()
         changed=[owner('P027',.92,.91),owner('P026',.73,.65)]
         self.assertIsNone(evidence.update(changed,(120,110),1.08,28,1000))
-        event=evidence.update(changed,(140,120),1.64,42,1000)
+        self.assertIsNone(evidence.update(changed,(127,110),1.20,31,1000))
+        self.assertIsNone(evidence.update(changed,(134,110),1.32,34,1000))
+        event=evidence.update(changed,(140,110),1.44,37,1000)
         self.assertEqual((event['from'],event['to']),('P026','P027'))
         self.assertTrue(event['requires_review'])
         self.assertIsNone(evidence.update(changed,(150,130),1.68,43,1000))
@@ -53,7 +55,7 @@ class EarlyHandoffTest(unittest.TestCase):
         candidate={'id':'L001','bbox':[100,100,150,180],'state':'随身携带','warning_level':'none',
                    'current_owner_id':None,'owners':[owner('P026',.96,.97)]}
         with patch('analytics.cv2_label') as label,patch('analytics.cv2_rectangle'),patch('analytics.cv2_dashed_line') as dashed,patch('analytics.cv2_line') as solid:
-            draw_scene(SimpleNamespace(shape=(300,400,3)),[],[candidate])
+            draw_scene(SimpleNamespace(shape=(300,400,3)),[],[candidate],diagnostic=True)
             dashed.assert_called_once()
             solid.assert_not_called()
             text=' '.join(call.args[1] for call in label.call_args_list)
@@ -65,10 +67,21 @@ class EarlyHandoffTest(unittest.TestCase):
         candidate={'id':'L001','bbox':[100,100,150,180],'state':'随身携带','warning_level':'none',
                    'current_owner_id':'P026','owners':[owner('P027',.96,.97),owner('P026',.9,.92)]}
         with patch('analytics.cv2_label') as label,patch('analytics.cv2_rectangle'),patch('analytics.cv2_dashed_line') as dashed,patch('analytics.cv2_line') as solid:
-            draw_scene(SimpleNamespace(shape=(300,400,3)),[],[candidate])
+            draw_scene(SimpleNamespace(shape=(300,400,3)),[],[candidate],diagnostic=True)
             solid.assert_called_once()
             dashed.assert_not_called()
             self.assertTrue(any('ASSOC P026' in call.args[1] for call in label.call_args_list))
+
+    def test_public_output_never_draws_ids_or_relationship_links(self):
+        candidate={'id':'L041','bbox':[100,100,150,180],'warning_level':'suspected',
+                   'current_owner_id':'P047','owners':[owner('P047',.96,.97)]}
+        person={'class_id':0,'track_id':'P047','xyxy':[80,20,180,260]}
+        with patch('analytics.cv2_label') as label,patch('analytics.cv2_rectangle'),patch('analytics.cv2_dashed_line') as dashed,patch('analytics.cv2_line') as solid:
+            draw_scene(SimpleNamespace(shape=(300,400,3)),[person],[candidate])
+            dashed.assert_not_called();solid.assert_not_called()
+            rendered=' '.join(c.args[1] for c in label.call_args_list)
+            self.assertNotIn('P047',rendered);self.assertNotIn('L041',rendered)
+            self.assertIn('BAG',rendered)
 
     def test_formal_binding_after_early_warning_does_not_duplicate_alarm(self):
         analyzer=SceneAnalyzer(30)

@@ -56,6 +56,9 @@ def assign_tracks(boxes, tracks, diagonal, observation, iou, center, frame=None)
             overlap=iou(box['xyxy'],track['bbox'])
             bh=track['bbox'][3]-track['bbox'][1];bw=track['bbox'][2]-track['bbox'][0]
             gate=.045+.65*max(bh,bw)/max(1,diagonal)
+            if gap>4:
+                # Do not extrapolate stale velocity indefinitely after occlusion.
+                distance=min(distance,math.dist(bc,track['center'])/max(1,diagonal))
             if distance>gate and overlap<.12:
                 continue
             appearance=0.
@@ -63,7 +66,23 @@ def assign_tracks(boxes, tracks, diagonal, observation, iou, center, frame=None)
                 appearance=float(cv2.compareHist(features[i],track['appearance'],cv2.HISTCMP_BHATTACHARYYA))
                 if appearance>.72 and overlap<.75:
                     continue
-            costs[i,j]=.45*distance/max(gate,.001)+.25*(1-overlap)+.5*appearance+.015*(gap-1)
+            # Long-gap recovery is conservative: appearance plus local geometry,
+            # or nearly the same box when an appearance sample is unavailable.
+            if gap>12:
+                has_appearance=features[i] is not None and track.get('appearance') is not None
+                if box['class_id']==0 and (appearance>.35 if has_appearance else overlap<.6):
+                    continue
+                if box['class_id'] in {24,26,28} and overlap<.55:
+                    old_area=max(1,bh*bw)
+                    new_area=(box['xyxy'][2]-box['xyxy'][0])*(box['xyxy'][3]-box['xyxy'][1])
+                    # A carried bag changes view during a transfer. Recover a
+                    # confirmed package only with nearby, overlapping geometry;
+                    # clothing histograms must not reject a rotating black bag.
+                    if not track.get('package_confirmed') or overlap<.15 or distance>.065 or not .4<=new_area/old_area<=2.5 or gap>60:
+                        continue
+            costs[i,j]=.45*distance/max(gate,.001)+.25*(1-overlap)+.5*appearance+.015*min(gap-1,12)
+            if box['class_id']==0 and box.get('confidence',1.)<box.get('track_birth_confidence',.35):
+                costs[i,j]+=.12  # High-confidence observations win competing assignments.
     rows,cols=linear_sum_assignment(costs)
     matches={}
     ambiguous=set(occluded)

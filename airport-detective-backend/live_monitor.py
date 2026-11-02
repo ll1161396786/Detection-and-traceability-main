@@ -194,6 +194,7 @@ class ShuttleMonitor:
                         boxes, candidates = stream["analyzer"].update(boxes, stream["frame"], evidence_time, w, h, frame=frame)
                         folder = self.s.DATA / "jobs" / jid
                         for candidate in candidates:
+                            candidate['cycle']=stream['cycle']
                             if candidate.get("alarm_frame"):
                                 candidate["event_crop"] = f"crop-{candidate['id']}-event-{candidate['alarm_revision']}.jpg"
                                 if candidate["alarm_frame"] == stream["frame"]:
@@ -214,7 +215,7 @@ class ShuttleMonitor:
                                 archive_path = folder / "archive.json"
                                 levels = {c["id"]: c.get("warning_level", "none") for c in json.loads(archive_path.read_text(encoding="utf-8"))} if archive_path.exists() else {}
                                 drawn = [{**c, "warning_level": levels.get(c["id"], c.get("warning_level", "none"))} for c in candidates]
-                                annotated = draw_scene(annotated, boxes, drawn)
+                                annotated = draw_scene(frame.copy(), boxes, drawn)
                                 scale = min(1., LIVE_PREVIEW_MAX_EDGE / max(w, h))
                                 if scale < 1:
                                     annotated = cv2.resize(annotated, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_AREA)

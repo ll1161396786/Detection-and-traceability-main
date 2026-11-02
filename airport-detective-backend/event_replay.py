@@ -12,7 +12,9 @@ def replay_window(frame, fps, duration):
     event = (int(frame) - 1) / float(fps)
     if not all(math.isfinite(v) for v in (event, duration)) or not 0 <= event < duration:
         raise ValueError("报警帧超出源视频范围，请重新检测。")
-    return max(0., event - 2), min(duration, event + 2), event
+    length = min(5., duration)
+    start = max(0., min(event - length / 2, duration - length))
+    return start, start + length, event
 
 
 def register_replay(server):
@@ -35,14 +37,6 @@ def register_replay(server):
         with server.lock:
             event, source = record_for(jid, candidate_id)
             revision = int(event["revision"])
-            start, end, at = replay_window(event["frame"], source["fps"], source["duration"])
-            folder = server.DATA / "jobs" / jid / "replays"
-            output = folder / f"{candidate_id}-{revision}.mp4"
-            info = {"url": f"/api/jobs/{jid}/replays/{candidate_id}/{revision}.mp4",
-                    "start": start, "end": end, "duration": end-start,
-                    "event_time": at, "event_offset": at-start, "revision": revision}
-            if output.is_file():
-                return jsonify(info)
             relative = source.get("video_path")
             if not relative:
                 raise ValueError("此旧任务缺少源视频定位信息，请重新检测。")
@@ -52,6 +46,27 @@ def register_replay(server):
             stat = path.stat()
             if stat.st_size != source["size"] or stat.st_mtime_ns != source.get("mtime_ns"):
                 raise ValueError("源视频已被替换，请重新检测后查看对应的新警报。")
+        # Repair old jobs with valid alarm frames but missing MKV duration.
+        # Full scanning runs outside the shared archive/inference lock.
+        if not source.get('duration') or source.get('frames',0)<=0:
+            source={**source,**server.video_info(path)}
+            with server.lock:
+                current,_=record_for(jid,candidate_id)
+                if current!=event:
+                    raise ValueError('该遗留物有新的报警事件，请再次点击查看。')
+                server.update(jid,source=source)
+        start, end, at = replay_window(event["frame"], source["fps"], source["duration"])
+        folder = server.DATA / "jobs" / jid / "replays"
+        output = folder / f"{candidate_id}-{revision}-5s.mp4"
+        info = {"url": f"/api/jobs/{jid}/replays/{candidate_id}/{revision}-5s.mp4",
+                "start": start, "end": end, "duration": end-start,
+                "event_time": at, "event_offset": at-start, "revision": revision}
+        with server.lock:
+            current,_=record_for(jid,candidate_id)
+            if current!=event:
+                raise ValueError('该遗留物有新的报警事件，请再次点击查看。')
+            if output.is_file():
+                return jsonify(info)
         if not encoder.acquire(blocking=False):
             return jsonify(error="另一段回放正在准备，请稍后重试。"), 409
         temporary = None
@@ -61,7 +76,8 @@ def register_replay(server):
             temporary = folder.parent / f"replay-pending-{uuid.uuid4().hex}.mp4"
             command = [imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y",
                        "-ss", str(start), "-i", str(path), "-t", str(end-start), "-map", "0:v:0", "-an",
-                       "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "libx264", "-preset", "veryfast",
+                       "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,setpts=PTS-STARTPTS", "-r", str(source['fps']),
+                       "-c:v", "libx264", "-preset", "veryfast",
                        "-crf", "20", "-pix_fmt", "yuv420p", "-threads", "2", "-movflags", "+faststart", str(temporary)]
             result = subprocess.run(command, capture_output=True, timeout=60,
                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -85,11 +101,11 @@ def register_replay(server):
                 temporary.unlink(missing_ok=True)
             encoder.release()
 
-    @server.app.get("/api/jobs/<jid>/replays/<candidate_id>/<int:revision>.mp4")
+    @server.app.get("/api/jobs/<jid>/replays/<candidate_id>/<int:revision>-5s.mp4")
     def replay_media(jid, candidate_id, revision):
         with server.lock:
             record_for(jid, candidate_id)
-            path = server.DATA / "jobs" / jid / "replays" / f"{candidate_id}-{revision}.mp4"
+            path = server.DATA / "jobs" / jid / "replays" / f"{candidate_id}-{revision}-5s.mp4"
             if not path.is_file():
                 return jsonify(error="回放尚未生成或已清理，请重新点击遗留物。"), 404
             return send_file(path, mimetype="video/mp4", conditional=True)

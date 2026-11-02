@@ -55,7 +55,7 @@ function updateHeaderControls() {
 async function monitorApi(path, body) {
   const response = await fetch(path, { method: body === undefined ? "GET" : "POST",
     headers: body === undefined ? {} : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(15000) });
+    body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(path.endsWith('/start') ? 90000 : 15000) });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "后端请求失败");
   return result;
@@ -185,20 +185,44 @@ function renderLiveItems() {
     const isConfirmed = item.warning_level === "confirmed";
     const level = isConfirmed ? "danger" : "suspected";
     return `<article class="item-row ${level} ${item.key === liveSelectedKey ? "active" : ""}" data-live-key="${escapeHtml(item.key)}">
-      <div class="item-identity"><img class="item-thumb" src="${item.package_photo}" alt="${item.id} 遗留物截图" loading="lazy" tabindex="0" role="button" aria-label="播放 ${item.id} 事件视频" title="点击播放事件前后各 2 秒视频" />
+      <div class="item-identity"><img class="item-thumb" src="${item.package_photo}" alt="${item.id} 遗留物截图" loading="lazy" tabindex="0" role="button" aria-label="播放 ${item.id} 事件视频" title="点击播放报警时刻附近共 5 秒视频" />
         <div class="item-meta"><div class="item-title"><strong>CAM-${item.camera_id} · ${item.id}</strong>
-          <span class="row-flag ${level}">${isConfirmed ? item.warning_source === "manual" ? "人工确认" : "遗留红警" : (item.handoff_requires_review || !item.transfer_count && item.suspected_transfer_count) ? "疑似转交 · 待复核" : item.transfer_count ? "所属关系变化" : "黄色警告"}</span></div>
+          <span class="row-flag ${level}">${liveAlertLabel(item)}</span></div>
           <p class="item-name">${escapeHtml(item.label_zh)}</p>
           <span class="row-sub">${escapeHtml(activeTrip.no)} · 静止 ${item.stationary_seconds}s</span>
-          <p class="live-reason" title="${escapeHtml(item.reason)}">${escapeHtml(item.reason)}</p>
+          <p class="live-reason" title="${escapeHtml(livePublicReason(item))}">${escapeHtml(livePublicReason(item))}</p>
           <div class="item-evidence-actions"><button type="button" data-replay-item>▶ 事件回放</button><button type="button" data-item-photo>放大照片</button></div>
           <button class="live-confirm" type="button" data-confirm-job="${item.job_id}" data-confirm-item="${item.id}" data-confirmed="${!isConfirmed}">${isConfirmed ? "撤销红警" : "人工确认遗留"}</button>
         </div></div>
       <div class="owner-list">${item.owners.length ? item.owners.slice(0, 3).map(owner => `
-        <div class="owner-card" title="所属人关联分数，需人工复核"><img class="owner-avatar" src="${owner.photo}" alt="CAM-${item.camera_id} ${owner.person_id} 可能所属人截图" loading="lazy" tabindex="0" role="button" aria-haspopup="dialog" title="点击放大照片" />
-          <div class="owner-body"><div class="owner-top"><strong>${owner.person_id}</strong><span class="owner-score">${Math.round(owner.probability * 100)}%</span></div><span class="owner-name">${owner.is_current_owner ? owner.present ? "当前关联人" : "最近关联人" : owner.is_first_owner ? "首位关联人" : item.owner_history?.includes(owner.person_id) ? "历史关联人" : "候选关联人"} · 关联分数</span></div></div>`).join("") : '<span class="live-empty-owner">暂无所属人关联证据</span>'}</div>
+        <div class="owner-card" title="关联证据，需人工复核"><img class="owner-avatar" src="${owner.photo}" alt="CAM-${item.camera_id} ${liveOwnerLabel(owner)}照片" data-target-hint="${liveOwnerPhotoHint(owner)}" loading="lazy" tabindex="0" role="button" aria-haspopup="dialog" title="点击放大照片 · ${liveOwnerPhotoHint(owner)}" />
+          <div class="owner-body"><div class="owner-top"><strong>${liveOwnerLabel(owner)}</strong><span class="owner-score">${Math.round(owner.probability * 100)}%</span></div><span class="owner-name">关联分数 · 待复核</span><span class="owner-name">${liveOwnerPhotoHint(owner)}</span></div></div>`).join("") : '<span class="live-empty-owner">暂无所属人关联证据</span>'}</div>
     </article>`;
   }).join("") : `<p class="live-empty">${liveConnectionError ? "后端连接中断，等待恢复" : "暂无遗留物警报"}</p>`;
+}
+
+function liveOwnerLabel(owner) {
+  return owner.is_current_owner || owner.is_recent_owner ? '最近关联人' : '候选关联人';
+}
+
+function liveOwnerPhotoHint(owner) {
+  return /[?&]target=1(?:&|$)/.test(owner.photo || '') ? '绿框内为关联人' : '旧截图未标注，请重新检测';
+}
+
+function livePublicReason(item) {
+  const reason = String(item.reason || '');
+  if (!/\bP-?\d+\b/i.test(reason)) return reason;
+  if (item.event_type === 'suspected_handoff' || item.suspected_transfer_count || item.transfer_count) {
+    return '检测到关联变化及接管运动证据，疑似转交，需人工复核。';
+  }
+  return reason.replace(/\bP-?\d+\b/gi, '关联人');
+}
+
+function liveAlertLabel(item) {
+  if (item.warning_level === "confirmed") return item.warning_source === "manual" ? "人工确认" : "遗留红警";
+  if (item.event_type === "suspected_left_behind" || item.placement_requires_review) return "疑似行李遗落 · 待复核";
+  if (item.handoff_requires_review || !item.transfer_count && item.suspected_transfer_count) return "疑似转交 · 待复核";
+  return item.transfer_count ? "所属关系变化" : "黄色警告";
 }
 
 async function loadLivePreview(camera) {
@@ -373,7 +397,7 @@ function initializeItemPhotoPreview() {
   const content = dialog.querySelector(".item-photo-content");
   const nativeButton = dialog.querySelector(".item-photo-native");
   let returnFocus = null;
-  picture.addEventListener("load", () => { picture.hidden = false; status.hidden = true; details.hidden = false; details.textContent = `原图 ${picture.naturalWidth} × ${picture.naturalHeight} 像素`; nativeButton.hidden = false; });
+  picture.addEventListener("load", () => { picture.hidden = false; status.hidden = true; details.hidden = false; details.textContent = `原图 ${picture.naturalWidth} × ${picture.naturalHeight} 像素${picture.dataset.targetHint ? ' · ' + picture.dataset.targetHint : ''}`; nativeButton.hidden = false; });
   picture.addEventListener("error", () => { picture.hidden = true; details.hidden = true; nativeButton.hidden = true; status.hidden = false; status.textContent = "照片暂时无法加载，可能已被清理。"; });
   nativeButton.addEventListener("click", () => { nativeButton.textContent = content.classList.toggle("native-size") ? "适应窗口" : "原图 100%"; });
   dialog.querySelector("button").addEventListener("click", () => dialog.close());
@@ -399,6 +423,7 @@ function initializeItemPhotoPreview() {
     status.hidden = false;
     status.textContent = "正在加载照片…";
     picture.alt = image.alt || "遗留物照片";
+    picture.dataset.targetHint = image.dataset.targetHint || '';
     dialog.querySelector("strong").textContent = picture.alt;
     picture.src = image.currentSrc || image.src;
     dialog.showModal();
@@ -430,8 +455,8 @@ function resetEventReplay() {
   video.hidden = true;
   document.querySelector("#replayStatus").hidden = false;
   document.querySelector("#replayStatus").textContent = "尚未选择遗留物";
-  document.querySelector("#replayTitle").textContent = "点击上方遗留物，查看报警帧前后各 2 秒的原始视频";
-  document.querySelector("#replayTiming").textContent = "片段通常为 4 秒；首尾按源视频可用长度截取";
+  document.querySelector("#replayTitle").textContent = "点击上方遗留物，查看报警时刻附近共 5 秒的原始视频";
+  document.querySelector("#replayTiming").textContent = "前后通常各 2.5 秒；首尾向另一侧补足，源视频不足 5 秒则播放全段";
   document.querySelector("#replayClose").hidden = true;
   document.querySelector("#replayRetry").hidden = true;
 }

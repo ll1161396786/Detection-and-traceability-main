@@ -44,28 +44,53 @@ class EventReplayTest(unittest.TestCase):
         self.temp.cleanup()
 
     def test_window_middle_start_end_and_invalid(self):
-        self.assertEqual(replay_window(31, 10, 6), (1., 5., 3.))
-        self.assertEqual(replay_window(1, 10, 6), (0., 2., 0.))
+        self.assertEqual(replay_window(31, 10, 6), (.5, 5.5, 3.))
+        self.assertEqual(replay_window(1, 10, 6), (0., 5., 0.))
+        self.assertEqual(replay_window(1, 10, 2), (0., 2., 0.))
         start, end, event = replay_window(60, 10, 6)
-        self.assertAlmostEqual(start, 3.9)
+        self.assertAlmostEqual(start, 1.)
         self.assertEqual(end, 6)
         self.assertAlmostEqual(event, 5.9)
         with self.assertRaises(ValueError):
             replay_window(70, 10, 6)
 
+    def test_missing_mkv_style_duration_is_repaired_for_existing_alarm(self):
+        server.jobs[self.jid]['source'].update(frames=0,duration=0.)
+        result=self.client.post(self.endpoint)
+        self.assertEqual(result.status_code,200,result.json)
+        self.assertEqual(result.json['duration'],5.)
+        self.assertEqual(server.jobs[self.jid]['source']['frames'],60)
+        self.assertEqual(server.jobs[self.jid]['source']['duration'],6.)
+        self.assertEqual(result.json['event_time'],3.)
+
+    def test_live_matroska_missing_frame_count_can_be_detected_and_replayed(self):
+        import imageio_ffmpeg
+        mkv=self.source.with_suffix('.mkv')
+        subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(),'-hide_banner','-loglevel','error','-i',str(self.source),
+                        '-map','0:v:0','-c:v','copy','-live','1',str(mkv)],check=True,capture_output=True)
+        info=server.video_info(mkv)
+        self.assertEqual(info['frames'],60)
+        self.assertEqual(info['duration'],6.)
+        server.jobs[self.jid]['source']={**info,'video_path':'02/'+mkv.name,'mtime_ns':mkv.stat().st_mtime_ns}
+        result=self.client.post(self.endpoint)
+        self.assertEqual(result.status_code,200,result.json)
+        self.assertAlmostEqual(server.video_info(self.folder/'replays'/'L001-1-5s.mp4')['duration'],5.,delta=.12)
+
     def test_real_clip_range_cache_and_clear(self):
+        (self.folder/'replays').mkdir()
+        (self.folder/'replays'/'L001-1.mp4').write_bytes(b'old-short-cache')
         response = self.client.post(self.endpoint)
         self.assertEqual(response.status_code, 200, response.json)
         info = response.json
-        self.assertEqual((info["start"], info["end"], info["event_offset"]), (1., 5., 2.))
-        output = self.folder / "replays" / "L001-1.mp4"
+        self.assertEqual((info["start"], info["end"], info["event_offset"]), (.5, 5.5, 2.5))
+        output = self.folder / "replays" / "L001-1-5s.mp4"
         meta = server.video_info(output)
-        self.assertAlmostEqual(meta["duration"], 4., delta=.12)
+        self.assertAlmostEqual(meta["duration"], 5., delta=.12)
         cap = cv2.VideoCapture(str(output))
         ok, frame = cap.read()
         cap.release()
         self.assertTrue(ok)
-        self.assertAlmostEqual(float(frame.mean()), 40., delta=8)
+        self.assertAlmostEqual(float(frame.mean()), 20., delta=8)
         media = self.client.get(info["url"], headers={"Range": "bytes=0-99"})
         self.assertEqual(media.status_code, 206)
         self.assertEqual(media.content_type, "video/mp4")
@@ -97,11 +122,11 @@ class EventReplayTest(unittest.TestCase):
         self.assertIn("旧警报", self.client.post(self.endpoint).json["error"])
 
     def test_boundary_clips_decode_without_wrapping(self):
-        for frame, expected in [(1, 2.), (60, 2.1)]:
+        for frame, expected in [(1, 5.), (60, 5.)]:
             server.save_local_archive(self.jid, [{**self.candidate, "alarm_frame": frame, "alarm_revision": 100+frame}])
             result = self.client.post(self.endpoint)
             self.assertEqual(result.status_code, 200, result.json)
-            output = self.folder / "replays" / f"L001-{100+frame}.mp4"
+            output = self.folder / "replays" / f"L001-{100+frame}-5s.mp4"
             self.assertAlmostEqual(server.video_info(output)["duration"], expected, delta=.12)
 
     def test_cache_clear_during_encoding_cannot_republish_deleted_evidence(self):
@@ -144,6 +169,45 @@ class EventReplayTest(unittest.TestCase):
         self.assertEqual(alerts[0]['suspected_transfer_count'],1)
         result=self.client.post(self.endpoint)
         self.assertEqual(result.status_code,200,result.json)
+
+
+    def test_loop_repeated_event_keeps_original_ids_and_manual_review(self):
+        base={**self.candidate,'cycle':1,'event_type':'suspected_left_behind','bbox':[100,100,160,180],
+              'event_bbox':[100,100,160,180],'owners':[{'person_id':'P001','probability':.9}]}
+        server.save_local_archive(self.jid,[base])
+        self.client.post(f'/api/jobs/{self.jid}/archive/L001/confirm',json={'confirmed':False})
+        repeated={**base,'id':'L009','cycle':2,'owners':[{'person_id':'P019','probability':.9}]}
+        server.save_local_archive(self.jid,[repeated])
+        records=json.loads((self.folder/'archive.json').read_text(encoding='utf-8'))
+        self.assertEqual(len(records),1)
+        self.assertEqual(records[0]['id'],'L001')
+        self.assertEqual(records[0]['warning_source'],'manual')
+        self.assertEqual([o['person_id'] for o in records[0]['owners']],['P001'])
+        # Even if the first loop later escalates to red, its earlier yellow
+        # signature must prevent a second yellow row during a new video loop.
+        server.save_local_archive(self.jid,[{**base,'event_type':'abandoned','alarm_revision':2,'alarm_frame':41}])
+        server.save_local_archive(self.jid,[repeated])
+        records=json.loads((self.folder/'archive.json').read_text(encoding='utf-8'))
+        self.assertEqual(len(records),1)
+        self.assertEqual(records[0]['event_type'],'abandoned')
+        server.save_local_archive(self.jid,[{**repeated,'id':'L010','bbox':[300,100,360,180],'event_bbox':[300,100,360,180]}])
+        self.assertEqual(len(json.loads((self.folder/'archive.json').read_text(encoding='utf-8'))),2)
+
+    def test_placement_warning_round_trips_through_fleet_and_replay(self):
+        from live_monitor import ShuttleMonitor
+        item={**self.candidate,'warning_level':'suspected','event_warning_level':'suspected',
+              'event_type':'suspected_left_behind','placement_requires_review':True,
+              'placement_events':[{'reason_code':'placed_then_left','time':3.,'frame':31}]}
+        (self.folder/'archive.json').unlink()
+        server.save_local_archive(self.jid,[item])
+        monitor=ShuttleMonitor(server,'03')
+        monitor.session={'trip_id':'T-03','model':'yolov10n.pt','cameras':[{'id':1,'job_id':self.jid}]}
+        alerts=monitor.state()['alerts']
+        self.assertEqual(alerts[0]['event_type'],'suspected_left_behind')
+        self.assertTrue(alerts[0]['placement_requires_review'])
+        result=self.client.post(self.endpoint)
+        self.assertEqual(result.status_code,200,result.json)
+        self.assertAlmostEqual(result.json['duration'],5.)
 
 
 if __name__ == "__main__":

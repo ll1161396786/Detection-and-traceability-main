@@ -77,7 +77,10 @@ class Detector:
         boxes = []
         for box in result.boxes.cpu().numpy():
             cls = int(box.cls[0])
-            if cls not in {24,26,28} and float(box.conf[0])<options["confidence"]:
+            # Weak person detections can rescue an existing track, but cannot
+            # create an identity (SceneAnalyzer applies the higher birth gate).
+            threshold = min(options["confidence"], .15) if cls == 0 and options["confidence"] <= .35 else options["confidence"]
+            if cls not in {24,26,28} and float(box.conf[0])<threshold:
                 continue
             if packages_only and cls not in {24,26,28}:
                 continue
@@ -88,6 +91,7 @@ class Detector:
                 continue  # A padding-only detection has no corresponding source pixels.
             boxes.append({"class_id": cls, "label": result.names[cls], "label_zh": ZH.get(cls, result.names[cls]),
                           "confidence": round(float(box.conf[0]), 4),
+                          "track_birth_confidence": max(.35, options["confidence"]) if cls == 0 else 0.,
                           "xyxy": [round(v, 2) for v in xyxy]})
         return boxes
 
@@ -119,9 +123,10 @@ class Detector:
                     box['detection_source']='person_context'
                     boxes.append(box)
                 if len(regions)>=2:break
+        from person_boxes import deduplicate_people
         fused=[]
-        for box in sorted(boxes,key=lambda b:-b['confidence']):
-            if any((old['class_id']==box['class_id'] or old['class_id'] in {24,26,28} and box['class_id'] in {24,26,28})
+        for box in deduplicate_people(boxes):
+            if any(box['class_id']!=0 and (old['class_id']==box['class_id'] or old['class_id'] in {24,26,28} and box['class_id'] in {24,26,28})
                    and box_iou(old['xyxy'],box['xyxy'])>.65 for old in fused):
                 continue
             fused.append(box)

@@ -6,6 +6,7 @@ from unittest.mock import patch
 import numpy as np
 import app as server
 from engine import cv2
+from person_photos import person_crop, mark_target
 
 
 class PersonPhotoTest(unittest.TestCase):
@@ -70,6 +71,53 @@ class PersonPhotoTest(unittest.TestCase):
         self.assertFalse(self.path.exists())
         self.assertFalse(self.path.with_suffix('.json').exists())
         self.assertEqual(self.client.get(url).status_code,404)
+
+    def test_target_box_matches_crop_coordinates_and_does_not_mark_neighbour(self):
+        frame=np.full((480,640,3),100,dtype=np.uint8)
+        # A bystander at x=305 remains visible in the contextual margin.
+        crop,target=person_crop(frame,[100,60,300,420],640,480)
+        self.assertEqual(target,[25,30,224,389])
+        marked=mark_target(crop,target)
+        self.assertTrue(np.array_equal(marked[30,25],[40,255,90]))
+        self.assertTrue(np.array_equal(marked[200,230],crop[200,230]))
+        self.assertTrue(np.array_equal(frame,np.full_like(frame,100)))
+
+    def test_saved_photo_has_target_marker_and_metadata(self):
+        self.save(np.full((720,1280,3),100,dtype=np.uint8),[300,60,700,650])
+        meta=json.loads(self.path.with_suffix('.json').read_text(encoding='utf-8'))
+        self.assertEqual(meta['target_bbox'],[50,49,449,638])
+        self.assertEqual(meta['target_mark_version'],1)
+        self.assertIn('&target=1',server.person_photo_url(self.jid,'P001'))
+        image=cv2.imdecode(np.frombuffer(self.path.read_bytes(),np.uint8),cv2.IMREAD_COLOR)
+        b,g,r=[int(v) for v in image[200,50]]
+        self.assertGreater(g-r,70)
+        self.assertGreater(g-b,70)
+        # Sharpness is assessed before drawing: the rectangle cannot inflate quality.
+        self.assertEqual(meta['sharpness'],0)
+
+    def test_target_clips_to_source_edges_without_wrapping(self):
+        frame=np.zeros((80,100,3),np.uint8)
+        crop,target=person_crop(frame,[-8,-4,110,90],100,80)
+        self.assertEqual(crop.shape[:2],(80,100))
+        self.assertEqual(target,[0,0,99,79])
+        marked=mark_target(crop,target)
+        self.assertTrue(np.array_equal(marked[0,0],[40,255,90]))
+        self.assertTrue(np.array_equal(marked[-1,-1],[40,255,90]))
+
+    def test_invalid_person_box_does_not_save_photo(self):
+        for coords in ([300,20,400,100],[50,50,20,80],[20,50,40,50]):
+            self.save(np.zeros((160,200,3),np.uint8),coords)
+        self.assertFalse(self.path.exists())
+
+    def test_legacy_photo_is_not_claimed_as_marked_until_new_observation(self):
+        server.write_jpeg(self.path,self.sharp(640,480))
+        self.path.with_suffix('.json').write_text(json.dumps({'pixels':9999999,'score':9999999}),encoding='utf-8')
+        old=self.path.read_bytes()
+        self.assertNotIn('target=1',server.person_photo_url(self.jid,'P001'))
+        self.assertEqual(self.client.get(server.person_photo_url(self.jid,'P001')).data,old)
+        self.save(np.full((240,320,3),100,np.uint8),[100,40,160,180])
+        self.assertIn('&target=1',server.person_photo_url(self.jid,'P001'))
+        self.assertNotEqual(self.path.read_bytes(),old)
 
 
 if __name__=='__main__':unittest.main()

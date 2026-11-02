@@ -19,9 +19,11 @@ from urllib.parse import urlparse
 from flask import Flask, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException
 from engine import ROOT, MODEL_NAMES, Detector, cv2, hardware
-from analytics import SceneAnalyzer, draw_scene, merge_warning
+from analytics import SceneAnalyzer, draw_scene, merge_warning, box_iou
+from video_metadata import decoded_frame_count
 import imageio_ffmpeg
 from person_photos import quality as person_photo_quality, improves as improves_person_photo, JPEG_QUALITY as PERSON_JPEG_QUALITY
+from person_photos import person_crop as crop_person_photo, mark_target, TARGET_MARK_VERSION
 
 DATA = ROOT / "data"
 VIDEOS = ROOT / "videos"
@@ -82,6 +84,20 @@ def save_local_archive(jid, candidates):
     path = DATA / "jobs" / jid / "archive.json"
     records = {item["id"]: item for item in json.loads(path.read_text(encoding="utf-8"))} if path.exists() else {}
     for candidate in candidates:
+        # Replaying an immutable local source is not a new real-world event.
+        # Match only across cycles of this exact job/camera, never across people,
+        # cameras or separate files. Keep the original evidence and reviewed state.
+        if candidate.get('cycle',1)>1 and candidate.get('alarm_frame') and candidate.get('event_type'):
+            fps=jobs[jid]['source']['fps']
+            repeated=next((row for row in records.values() if row['id']!=candidate['id'] and any(
+                           event.get('cycle',1)<candidate['cycle']
+                           and event.get('event_type')==candidate['event_type']
+                           and event.get('alarm_frame') and abs(event['alarm_frame']-candidate['alarm_frame'])<=max(1,round(.5*fps))
+                           and box_iou(event.get('event_bbox',event.get('bbox',[0,0,0,0])),candidate.get('event_bbox',candidate['bbox']))>.7
+                           for event in row.get('event_signatures',[row]))),None)
+            if repeated:
+                records.pop(candidate['id'],None)
+                continue
         previous = records.get(candidate["id"], {})
         owners = {owner["person_id"]: owner for owner in previous.get("owners", [])}
         for owner in candidate.get("owners", []):
@@ -96,12 +112,21 @@ def save_local_archive(jid, candidates):
         for owner in owners.values():
             owner["is_first_owner"] = owner["person_id"] == first_owner
             owner["is_current_owner"] = owner["person_id"] == current_owner
+            owner['is_recent_owner']=owner['person_id']==candidate.get('recent_owner_id',current_owner)
         records[candidate["id"]] = {
             **previous, **candidate,
             **merge_warning(previous, candidate),
             "stationary_seconds": max(previous.get("stationary_seconds", 0), candidate.get("stationary_seconds", 0)),
             "owners": sorted(owners.values(), key=lambda owner: (not owner["is_current_owner"], not owner["is_first_owner"], -owner["probability"])),
         }
+        if candidate.get('alarm_frame') and candidate.get('event_type'):
+            signatures=list(previous.get('event_signatures',[]))
+            signature={key:candidate.get(key) for key in ('event_type','alarm_frame','alarm_revision','event_bbox','cycle')}
+            signature['event_bbox']=candidate.get('event_bbox',candidate.get('bbox',[0,0,0,0]))
+            signature['cycle']=candidate.get('cycle',1)
+            if not any(e.get('alarm_revision')==signature['alarm_revision'] and e.get('cycle',1)==signature['cycle'] for e in signatures):
+                signatures.append(signature)
+            records[candidate['id']]['event_signatures']=signatures
         # Snapshot the triggering frame, rather than the continually advancing last_seen.
         if candidate.get("alarm_frame") and jobs[jid]["source"].get("video_path"):
             replay = records[candidate["id"]].get("replay", {})
@@ -128,6 +153,8 @@ def video_info(path):
             raise ValueError("视频帧率无效或超过 240 FPS，请先转换为标准帧率 MP4。")
         frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
         frames = max(0, int(frames)) if math.isfinite(frames) else 0
+        if frames<=0:
+            frames=decoded_frame_count(path)
         height, width = first.shape[:2]
         return {"fps": round(fps, 5), "frames": frames, "width": width, "height": height,
                 "duration": round(frames / fps, 2), "size": path.stat().st_size}
@@ -446,7 +473,13 @@ def person_crop(jid, name):
 
 def person_photo_url(jid,person_id):
     path=DATA/'jobs'/jid/'people'/f'person-{person_id}.jpg'
-    try:version=f'?v={path.stat().st_mtime_ns}'
+    try:
+        version=f'?v={path.stat().st_mtime_ns}'
+        try:
+            metadata=json.loads(path.with_suffix('.json').read_text(encoding='utf-8'))
+            if metadata.get('target_mark_version')==TARGET_MARK_VERSION:
+                version+='&target=1'
+        except (OSError,ValueError,AttributeError):pass
     except OSError:version=''
     return f'/api/jobs/{jid}/people/person-{person_id}.jpg{version}'
 
@@ -592,19 +625,20 @@ def save_person_crop(folder, frame, box, width, height):
     if not re.fullmatch(r"P\d{3,}", track_id):
         return
     path = folder / "people" / f"person-{track_id}.jpg"
-    x1, y1, x2, y2 = [int(v) for v in box["xyxy"]]
-    pad_x, pad_y = max(12, (x2 - x1) // 8), max(12, (y2 - y1) // 12)
-    crop = frame[max(0, y1-pad_y):min(height, y2+pad_y), max(0, x1-pad_x):min(width, x2+pad_x)]
-    if not crop.size:return
+    crop,target_bbox=crop_person_photo(frame,box['xyxy'],width,height)
+    if crop is None or not crop.size:return
     metadata=path.with_suffix('.json')
     proposed=person_photo_quality(crop,box.get('confidence',.9))
+    proposed.update(target_bbox=target_bbox,target_mark_version=TARGET_MARK_VERSION)
     with lock:
         previous=None
         if path.exists() and metadata.exists():
             try:previous=json.loads(metadata.read_text(encoding='utf-8'))
             except (ValueError,OSError):pass
-        if not improves_person_photo(proposed,previous):return
-        write_jpeg(path,crop,quality=PERSON_JPEG_QUALITY)
+        # Old photos lack target coordinates: replace on the next actual observation,
+        # never guess a target rectangle in an already saved group photo.
+        if previous and previous.get('target_mark_version')==TARGET_MARK_VERSION and not improves_person_photo(proposed,previous):return
+        write_jpeg(path,mark_target(crop,target_bbox),quality=PERSON_JPEG_QUALITY)
         json_write(metadata,proposed)
 
 
@@ -675,7 +709,7 @@ def run_job(jid, source):
                 processed += 1
                 timestamp = (frame_index - 1) / meta["fps"]
                 boxes, candidates = analyzer.update(boxes, frame_index, timestamp, w, h, frame=frame)
-                annotated = draw_scene(annotated, boxes, candidates)
+                annotated = draw_scene(frame.copy(), boxes, candidates)
                 for box in boxes:
                     if box.get("class_id") == 0:
                         save_person_crop(folder, frame, box, w, h)

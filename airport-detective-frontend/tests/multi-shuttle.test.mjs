@@ -88,7 +88,7 @@ test('automatic red and transfer yellow show the correct badges and current hold
   const markup = run('itemList.innerHTML');
   assert.ok(markup.includes('遗留红警'));
   assert.ok(markup.includes('所属关系变化'));
-  assert.ok(markup.includes('当前关联人'));
+  assert.ok(markup.includes('最近关联人'));
   assert.equal(run('itemCount.textContent'),'红警 1 · 黄警 1');
 });
 
@@ -101,6 +101,21 @@ test('a suspected handoff is labelled for review while its people remain candida
   run('liveState=fixture;realRenderLiveItems()');
   assert.match(run('itemList.innerHTML'),/疑似转交 · 待复核/);
   assert.match(run('itemList.innerHTML'),/候选关联人/);
+});
+
+test('person IDs are absent from visible text, tooltips and photo modal titles', () => {
+  const {context,run}=setup();
+  context.fixture=state('03',{alerts:[{id:'L006',camera_id:1,job_id:'job',key:'job:L006',package_photo:'/item',
+    label_zh:'包裹',warning_level:'suspected',event_type:'suspected_handoff',stationary_seconds:0,
+    reason:'疑似转交：由 P047 变为 P058',
+    owners:[{person_id:'P047',photo:'/first-photo',probability:.9,is_current_owner:true},
+            {person_id:'P058',photo:'/other-photo',probability:.8}]}]});
+  run('liveState=fixture;realRenderLiveItems()');
+  const markup=run('itemList.innerHTML');
+  assert.doesNotMatch(markup,/P047|P058/);
+  assert.match(markup,/最近关联人/);assert.match(markup,/候选关联人/);
+  assert.match(markup,/alt="CAM-1 最近关联人照片"/);
+  assert.match(markup,/alt="CAM-1 候选关联人照片"/);
 });
 
 test('vehicles without old demo clips can select and start their own backend', async () => {

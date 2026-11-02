@@ -148,12 +148,12 @@
 
           <section class="col replay-panel" aria-label="遗留物事件回放">
             <div class="panel-head"><div><p class="eyebrow">Event Replay</p><h2>遗留物事件回放</h2></div><button id="replayClose" type="button" hidden>关闭回放</button></div>
-            <p id="replayTitle" class="replay-description">点击上方遗留物，查看报警帧前后各 2 秒的原始视频</p>
+            <p id="replayTitle" class="replay-description">点击上方遗留物，查看报警时刻附近共 5 秒的原始视频</p>
             <div class="replay-stage">
               <video id="eventReplay" controls playsinline muted preload="metadata" hidden aria-label="遗留物事件短视频"></video>
               <p id="replayStatus" role="status">尚未选择遗留物</p>
             </div>
-            <div class="replay-footer"><span id="replayTiming">片段通常为 4 秒；首尾按源视频可用长度截取</span><button id="replayRetry" type="button" hidden>重新加载</button></div>
+            <div class="replay-footer"><span id="replayTiming">前后通常各 2.5 秒；首尾向另一侧补足，源视频不足 5 秒则播放全段</span><button id="replayRetry" type="button" hidden>重新加载</button></div>
           </section>
 
           <!-- 异常行为分析（下） -->

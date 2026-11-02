@@ -19,7 +19,7 @@ function proxyBackend(req, res) {
     res.writeHead(response.statusCode, response.headers);
     response.pipe(res);
   });
-  const timeout = req.method === "POST" && /\/archive\/L\d+\/replay$/.test(req.url || "") ? 75000 : 15000;
+  const timeout = req.method === "POST" && /\/shuttles\/\d+\/start$/.test(req.url || "") ? 95000 : req.method === "POST" && /\/archive\/L\d+\/replay$/.test(req.url || "") ? 75000 : 15000;
   upstream.setTimeout(timeout, () => upstream.destroy(new Error("后端请求超时")));
   upstream.on("error", error => {
     if (!res.headersSent) writeJson(res, 502, { error: "后端尚未启动，请运行 total-program/start-monitor.cmd。" });

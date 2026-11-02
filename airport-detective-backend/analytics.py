@@ -6,7 +6,8 @@ analysis; its probabilities are association scores, not trained probabilities.
 import math
 from collections import defaultdict, deque
 from tracking import assign_tracks, contact
-from handoff import HandoffEvidence
+from handoff import HandoffEvidence, near_feet, acquisition_motion
+from placement import PlacementEvidence
 
 
 LUGGAGE_CLASSES = {24, 26, 28}  # backpack, handbag, suitcase in COCO
@@ -52,7 +53,7 @@ def box_iou(a, b):
 
 
 class SceneAnalyzer:
-    """Greedy class-aware tracking suited to a fixed-camera demo."""
+    """Global assignment with conservative short-gap recovery and event episodes."""
 
     def __init__(self, linger_seconds=3.0):
         self.linger_seconds = float(linger_seconds)
@@ -83,6 +84,8 @@ class SceneAnalyzer:
             "owner_last_near": -math.inf, "pending_origin": c,
             "class_scores": {box["class_id"]:box.get("confidence",1.)},
             "package_confirmed": False, "handoff_evidence": HandoffEvidence(), "suspected_transfers": [],
+            "placement_evidence": PlacementEvidence(), "placement_events": [], "red_latched": False,
+            "event_type": None,
         }
         return track_id
 
@@ -90,10 +93,25 @@ class SceneAnalyzer:
         diagonal = math.hypot(width, height)
         self.observation += 1
         self.tracks = {tid:t for tid,t in self.tracks.items()
-                       if self.observation-t["last_observation"]<=60 and timestamp-t["last_time"]<=3.}
+                       if self.observation-t["last_observation"]<= (900 if t["class_id"] in LUGGAGE_CLASSES and t["package_confirmed"] else 240)
+                       and timestamp-t["last_time"]<= (30. if t["class_id"] in LUGGAGE_CLASSES and t["package_confirmed"] else 8.)}
+        # Remove duplicate boxes before they can start duplicate identities.
+        deduplicated=[]
+        for box in sorted(boxes,key=lambda b:-b.get('confidence',1.)):
+            # Crossing people legitimately overlap: this extra suppression is
+            # restricted to duplicate package boxes from the supplemental pass.
+            if any(box['class_id'] in LUGGAGE_CLASSES and other['class_id'] in LUGGAGE_CLASSES
+                   and box_iou(box['xyxy'],other['xyxy'])>.8 for other in deduplicated):
+                continue
+            deduplicated.append(box)
+        boxes=deduplicated
         matches,features,ambiguous=assign_tracks(boxes,self.tracks,diagonal,self.observation,box_iou,center,frame)
         for index, box in enumerate(boxes):
-            tid = matches.get(index) or self._new_track(box, frame_index, timestamp)
+            tid = matches.get(index)
+            if tid is None and box['class_id']==0 and box.get('confidence',1.)<box.get('track_birth_confidence',.35):
+                box['track_id']=''
+                continue
+            tid = tid or self._new_track(box, frame_index, timestamp)
             track = self.tracks[tid]
             previous = track["center"]
             current = center(box["xyxy"])
@@ -160,7 +178,7 @@ class SceneAnalyzer:
             owners.append({"person_id": person_id, "probability": round(score, 3),
                            "distance": round(evidence["last_distance"], 3), "present": present,
                            "near_frames": evidence["near"], "first_seen": round(person["first_time"], 2),
-                           "contact_score": round(current_closeness,3), "association_ambiguous": person.get("ambiguous",False),
+                           "contact_score": round(current_closeness,3), "association_ambiguous": person.get("ambiguous",False) or person['hits']<3,
                            "bbox": person["bbox"]})
         owners.sort(key=lambda owner: owner["probability"], reverse=True)
         # Current proximity drives a handoff; lifetime score alone would keep
@@ -168,6 +186,15 @@ class SceneAnalyzer:
         eligible = sorted((owner for owner in owners if owner["present"] and owner["contact_score"] >= .5
                            and owner["probability"] >= .55), key=lambda owner: (-owner["probability"],owner["person_id"]))
         best = eligible[0] if eligible else None
+        carrying=bool(best and not best['association_ambiguous'] and not near_feet(item['bbox'],best['bbox']) and stationary<.3)
+        if carrying:
+            if item.get('carried_since') is None:
+                item.update(carried_since=timestamp,carried_origin=item['center'])
+            if timestamp-item['carried_since']>=1. and math.dist(item['center'],item['carried_origin'])>.03*diagonal:
+                item['red_latched']=False
+        else:
+            item['carried_since']=None
+        suspected=item['handoff_evidence'].update(owners,item['center'],timestamp,frame_index,diagonal,bag_box=item['bbox'])
         # Ambiguous near-equal candidates do not establish a new holder.
         proposed = best["person_id"] if best and not best["association_ambiguous"] and (len(eligible)==1 or best["probability"]-eligible[1]["probability"]>=.10) else None
         current=next((o for o in eligible if o["person_id"]==item["current_owner_id"]),None)
@@ -181,17 +208,24 @@ class SceneAnalyzer:
             item.update(pending_owner_id=proposed, owner_streak=1 if proposed else 0)
             item["pending_since"]=timestamp
             item["pending_origin"]=item["center"]
+            item['pending_person_origin']=best['bbox'] if best else None
+            item['pending_both_seen']=False
         is_transfer=item["current_owner_id"] is not None and proposed!=item["current_owner_id"]
         moved=math.dist(item["center"],item["pending_origin"])/max(1,diagonal)>=.008
         # Require release of the incumbent plus sustained acquisition and package
         # motion. Mere proximity or a stationary-bag bystander cannot cause a handoff.
         released=not current or best and best["probability"]-current["probability"]>=.18
+        if proposed and any(o['person_id']==item['current_owner_id'] and o['present'] for o in owners):
+            item['pending_both_seen']=True
+        acquisition_geometry=bool(best and not near_feet(item['bbox'],best['bbox'])
+                                  and acquisition_motion(item['pending_origin'],item['center'],item.get('pending_person_origin'),best['bbox'],diagonal,.008))
         if is_transfer and released:
             if item.get("release_since") is None:item["release_since"]=timestamp
         else:
             item["release_since"]=None
         transfer_ready=(item.get("release_since") is not None and timestamp-item["release_since"]>=.25 and moved
-                        and timestamp-item["owner_last_near"]<=2.)
+                        and timestamp-item["owner_last_near"]<=2.
+                        and item.get('pending_both_seen') and acquisition_geometry)
         stable=item["owner_streak"] >= (TRANSFER_STABLE_FRAMES if is_transfer else OWNER_STABLE_FRAMES)
         duration=timestamp-item["pending_since"] >= (.45 if is_transfer else .16)
         if proposed and stable and duration and (not is_transfer or transfer_ready) and proposed != item["current_owner_id"]:
@@ -208,18 +242,29 @@ class SceneAnalyzer:
                 if not already_warned:
                     item["alarm_revision"] += 1
                     item["event_warning_level"] = "suspected"
+                    item['event_type']='suspected_handoff'
                     item.update(alarm_frame=frame_index, alarm_time=timestamp)
-        suspected=item["handoff_evidence"].update(owners,item["center"],timestamp,frame_index,diagonal)
         if suspected and not any(t['from']==suspected['from'] and t['to']==suspected['to'] and abs(t['time']-timestamp)<2 for t in item['transfers']):
             item["suspected_transfers"].append(suspected)
             item["alarm_revision"]+=1
             item["event_warning_level"]="suspected"
+            item['event_type']='suspected_handoff'
+            item.update(alarm_frame=frame_index,alarm_time=timestamp)
+        placement=item['placement_evidence'].update(owners,item['bbox'],timestamp,frame_index,diagonal,stationary,
+                                                   handoff=bool(suspected or item['handoff_evidence'].acquired(item['current_owner_id'],timestamp)))
+        if placement and not item['red_latched']:
+            item['placement_events'].append(placement)
+            item['alarm_revision']+=1
+            item['event_warning_level']='suspected'
+            item['event_type']='suspected_left_behind'
             item.update(alarm_frame=frame_index,alarm_time=timestamp)
         abandoned = stationary >= self.linger_seconds and not eligible and timestamp-item["owner_last_near"]>.75 and item["scores"][-1]>=.2
         item["abandoned_streak"] = item["abandoned_streak"] + 1 if abandoned else 0
-        if item["abandoned_streak"] == ABANDONED_RED_FRAMES:
+        if item["abandoned_streak"] == ABANDONED_RED_FRAMES and not item['red_latched']:
+            item['red_latched']=True
             item["alarm_revision"] += 1
             item["event_warning_level"] = "confirmed"
+            item['event_type']='abandoned'
             item.update(alarm_frame=frame_index, alarm_time=timestamp)
         stable_owner=next((owner for owner in owners if owner["person_id"]==item["current_owner_id"] and owner["present"]),None)
         pending=bool(proposed and item["current_owner_id"] and proposed!=item["current_owner_id"])
@@ -246,6 +291,10 @@ class SceneAnalyzer:
                      "transfer_count": len(item["transfers"]), "abandoned_frames": item["abandoned_streak"],
                      "red_frame_threshold": ABANDONED_RED_FRAMES, "alarm_revision": item["alarm_revision"],
                      "event_warning_level": item["event_warning_level"]}
+        candidate['event_type']=item['event_type']
+        candidate['placement_events']=list(item['placement_events'])
+        candidate['placement_requires_review']=item['event_type']=='suspected_left_behind'
+        candidate['recent_owner_id']=item['current_owner_id'] or (item['placement_evidence'].source or {}).get('id')
         candidate["suspected_transfers"]=list(item["suspected_transfers"])
         candidate["suspected_transfer_count"]=len(item["suspected_transfers"])
         candidate["handoff_requires_review"]=bool(item["suspected_transfers"] and (not item["transfers"]
@@ -256,21 +305,33 @@ class SceneAnalyzer:
                                          "ready":bool(transfer_ready)} if pending else None
         if "alarm_frame" in item:
             candidate.update(alarm_frame=item["alarm_frame"], alarm_time=item["alarm_time"])
+            if item.get('event_bbox_revision')!=item['alarm_revision']:
+                item['event_bbox']=list(item['bbox'])
+                item['event_bbox_revision']=item['alarm_revision']
+            candidate['event_bbox']=item['event_bbox']
         candidate["automatic_warning_level"] = item["event_warning_level"]
         candidate.update(merge_warning(self.luggage_history.get(item["id"], {}), candidate))
         if candidate["warning_level"] == "confirmed" and item["abandoned_streak"] >= ABANDONED_RED_FRAMES:
             candidate["reason"] = f"连续 {item['abandoned_streak']} 帧满足遗留条件，触发红色警告（阈值 {ABANDONED_RED_FRAMES} 帧）"
         elif candidate["warning_level"] == "confirmed":
             candidate["reason"] = "已记录连续5帧遗留红警；当前画面已变化，保留警报档案供复核"
+        elif item['event_type']=='suspected_left_behind':
+            event=item['placement_events'][-1]
+            candidate['reason']=('疑似行李遗落：观察到包裹下移至脚边并减速停留，疑似放置；人员可能仍在附近，是否遗留需人工复核'
+                                 if event['reason_code']=='placed_pending_review' else
+                                 '疑似行李遗落：观察到行李下移至脚边、停留，原关联人随后离开或持续失去联系；需人工复核'
+                                 if event['reason_code']=='placed_then_left' else
+                                 '疑似行李遗落：行李持续静止且暂缺近邻关联人；需人工复核')
         elif item["transfers"] and not candidate["handoff_requires_review"]:
             transfer = item["transfers"][-1]
             candidate["reason"] = f"所属关系由 {transfer['from']} 转交至 {transfer['to']}；首位关联人 {item['first_owner_id']}，累计转交 {len(item['transfers'])} 次"
         elif item["suspected_transfers"]:
             transfer=item["suspected_transfers"][-1]
-            candidate["reason"]=f"疑似转交：候选关联由 {transfer['from']} 变为 {transfer['to']}，已观察到释放、接管和包移动证据；持有人尚待复核"
+            candidate["reason"]=f"疑似转交：候选关联由 {transfer['from']} 变为 {transfer['to']}，释放后观察到横向接管、抬起或人与包共同移动证据；需人工复核"
         for owner in owners:
             owner["is_first_owner"] = owner["person_id"] == item["first_owner_id"]
             owner["is_current_owner"] = owner["person_id"] == item["current_owner_id"]
+            owner['is_recent_owner']=owner['person_id']==candidate['recent_owner_id']
         owners.sort(key=lambda owner: (not owner["is_current_owner"], not owner["is_first_owner"], -owner["probability"]))
         candidate["owners"] = owners[:3]
         self.luggage_history[item["id"]] = candidate
@@ -291,8 +352,26 @@ def relationship_display(candidate):
     return max(owners,key=lambda owner:owner.get("probability",0),default=None),False
 
 
-def draw_scene(frame, boxes, candidates):
-    """Solid lines mean accepted association; grey dashes mean unbound candidates."""
+def draw_scene(frame, boxes, candidates, diagnostic=False):
+    """Public overlays show people/bags only; IDs remain internal tracking keys."""
+    if not diagnostic:
+        candidate_ids={c['id'] for c in candidates}
+        for box in boxes:
+            if box.get('class_id')==0 and box.get('track_id'):
+                x1,y1,x2,y2=map(int,box['xyxy'])
+                cv2_rectangle(frame,(x1,y1),(x2,y2),(93,231,169),2)
+                cv2_label(frame,'PERSON',x1,max(16,y1-5),(93,231,169))
+            elif box.get('class_id')!=0 and box.get('track_id') not in candidate_ids and box.get('confidence',1.)>=.25:
+                x1,y1,x2,y2=map(int,box['xyxy'])
+                cv2_rectangle(frame,(x1,y1),(x2,y2),(73,173,255),2)
+                cv2_label(frame,'BAG' if box['class_id'] in LUGGAGE_CLASSES else box.get('label','OBJECT'),x1,max(16,y1-5),(73,173,255))
+        for candidate in candidates:
+            x1,y1,x2,y2=map(int,candidate['bbox'])
+            color=(63,82,245) if candidate.get('warning_level')=='confirmed' else (69,197,255) if candidate.get('warning_level')=='suspected' else (93,231,169)
+            cv2_rectangle(frame,(x1,y1),(x2,y2),color,3)
+            cv2_label(frame,'BAG',x1,min(frame.shape[0]-5,y2+18),color)
+        return frame
+    # Explicit diagnostics are used only by local verification, never live output.
     candidate_by_id = {c["id"]: c for c in candidates}
     for box in boxes:
         tid = box.get("track_id")
@@ -306,7 +385,7 @@ def draw_scene(frame, boxes, candidates):
         color = (63, 82, 245) if candidate.get("warning_level") == "confirmed" else (69, 197, 255) if candidate.get("warning_level") == "suspected" else (93, 231, 169)
         cv2_rectangle(frame, (x1, y1), (x2, y2), color, 3)
         owner,bound=relationship_display(candidate)
-        state_code = "CONFIRMED" if candidate.get("warning_level") == "confirmed" else "TRANSFER" if candidate.get("warning_level") == "suspected" else "HANDOFF_PENDING" if candidate.get("pending_transfer") else "ASSOCIATED" if bound else "UNASSIGNED"
+        state_code = "CONFIRMED" if candidate.get("warning_level") == "confirmed" else "LEFT_BEHIND" if candidate.get('event_type')=='suspected_left_behind' else "TRANSFER" if candidate.get("warning_level") == "suspected" else "HANDOFF_PENDING" if candidate.get("pending_transfer") else "ASSOCIATED" if bound else "UNASSIGNED"
         cv2_label(frame, f"{item_id} {state_code}", x1, min(frame.shape[0] - 5, y2 + 18), color)
         if owner:
             px1, py1, px2, py2 = [int(v) for v in owner["bbox"]]
