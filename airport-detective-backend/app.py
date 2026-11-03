@@ -99,12 +99,13 @@ def save_local_archive(jid, candidates):
                 records.pop(candidate['id'],None)
                 continue
         previous = records.get(candidate["id"], {})
-        owners = {owner["person_id"]: owner for owner in previous.get("owners", [])}
+        owners = {owner["person_id"]: {**owner, 'present':False, 'probability':0., 'contact_score':0.}
+                  for owner in previous.get("owners", [])} if 'owners' not in candidate else {}
         for owner in candidate.get("owners", []):
             saved = owners.get(owner["person_id"], {})
             owners[owner["person_id"]] = {
                 **saved, **owner,
-                "probability": max(saved.get("probability", 0), owner["probability"]),
+                "probability": owner["probability"],
                 "near_frames": max(saved.get("near_frames", 0), owner.get("near_frames", 0)),
             }
         first_owner = candidate.get("first_owner_id", previous.get("first_owner_id"))
@@ -117,8 +118,11 @@ def save_local_archive(jid, candidates):
             **previous, **candidate,
             **merge_warning(previous, candidate),
             "stationary_seconds": max(previous.get("stationary_seconds", 0), candidate.get("stationary_seconds", 0)),
-            "owners": sorted(owners.values(), key=lambda owner: (not owner["is_current_owner"], not owner["is_first_owner"], -owner["probability"])),
+            "owners": sorted(owners.values(), key=lambda owner: (not owner['is_recent_owner'], not owner.get('present',False), -owner["probability"]))[:3],
         }
+        if (previous.get('event_owners') is not None and
+                previous.get('alarm_revision')==candidate.get('alarm_revision')):
+            records[candidate['id']]['event_owners']=previous['event_owners']
         if candidate.get('alarm_frame') and candidate.get('event_type'):
             signatures=list(previous.get('event_signatures',[]))
             signature={key:candidate.get(key) for key in ('event_type','alarm_frame','alarm_revision','event_bbox','cycle')}
@@ -380,11 +384,12 @@ def job_archive(jid):
         records = []
         for candidate in json.loads(path.read_text(encoding="utf-8")):
             item = dict(candidate)
+            item['association_snapshot_available']='event_owners' in candidate
             item.setdefault("warning_level", "suspected" if item.get("risk") == "high" else "none")
             item["package_photo"] = f"/api/jobs/{jid}/crops/{candidate.get('event_crop', candidate['crop'])}"
             item["owners"] = [
-                {**owner, "photo": person_photo_url(jid,owner['person_id'])}
-                for owner in candidate.get("owners", [])
+                {**owner, "photo": owner_photo_url(jid,owner)}
+                for owner in candidate.get('event_owners',candidate.get("owners", []))
             ]
             records.append(item)
         return jsonify(job_id=jid, status=job["status"], cleared=False,
@@ -461,7 +466,7 @@ def candidate_crop(jid, name):
 
 @app.get("/api/jobs/<jid>/people/<name>")
 def person_crop(jid, name):
-    if jid not in jobs or jobs[jid].get("archive_cleared") or not re.fullmatch(r"person-P\d{3,}\.jpg", name or ""):
+    if jid not in jobs or jobs[jid].get("archive_cleared") or not re.fullmatch(r"(?:person-P\d{3,}|event-L\d{3,}-r\d+-\d+)\.jpg", name or ""):
         return jsonify(error="人员截图不存在"), 404
     from io import BytesIO
     with lock:
@@ -469,6 +474,13 @@ def person_crop(jid, name):
         if not path.is_file() or jobs[jid].get('archive_cleared'):
             return jsonify(error="人员截图不存在"), 404
         return send_file(BytesIO(path.read_bytes()),mimetype='image/jpeg')
+
+
+def owner_photo_url(jid,owner):
+    if owner.get('event_role'):
+        name=owner.get('event_photo','')
+        return f'/api/jobs/{jid}/people/{name}?target=1' if re.fullmatch(r'event-L\d{3,}-r\d+-\d+\.jpg',name) else None
+    return person_photo_url(jid,owner['person_id'])
 
 
 def person_photo_url(jid,person_id):
@@ -620,6 +632,41 @@ def save_candidate_crop(folder, frame, candidate, width, height):
         write_jpeg(path, crop)
 
 
+def save_event_owner_photos(jid, candidates, frame, frame_index, source):
+    """Capture the recorded participant frame once, never a later best portrait."""
+    frames={frame_index:frame};cap=None
+    try:
+        for candidate in candidates:
+            if candidate.get('alarm_frame')!=frame_index:continue
+            if not re.fullmatch(r'L\d{3,}',candidate['id']):continue
+            revision=int(candidate.get('alarm_revision',0))
+            for i,owner in enumerate(candidate.get('event_owners',[])):
+                n=owner.get('evidence_frame',0)
+                if not isinstance(n,int) or not 1<=n<=frame_index:continue
+                name=f'event-{candidate["id"]}-r{revision}-{i}.jpg'
+                target=DATA/'jobs'/jid/'people'/name
+                if n not in frames:
+                    if cap is None:
+                        if jobs[jid]['source'].get('mtime_ns') not in (None,Path(source).stat().st_mtime_ns):continue
+                        cap=cv2.VideoCapture(str(source))
+                    cap.set(cv2.CAP_PROP_POS_FRAMES,n-1)
+                    ok,source_frame=cap.read()
+                    if not ok:continue
+                    frames[n]=source_frame
+                source_frame=frames[n];h,w=source_frame.shape[:2]
+                crop,bbox=crop_person_photo(source_frame,owner['bbox'],w,h)
+                if crop is None:continue
+                with lock:
+                    if jobs[jid].get('archive_cleared'):return
+                    if not target.exists():
+                        write_jpeg(target,mark_target(crop,bbox),quality=PERSON_JPEG_QUALITY)
+                    owner['event_photo']=name
+    except (OSError,ValueError,cv2.error):
+        logging.exception('Event participant photo unavailable: %s',jid)
+    finally:
+        if cap is not None:cap.release()
+
+
 def save_person_crop(folder, frame, box, width, height):
     track_id = box.get("track_id", "")
     if not re.fullmatch(r"P\d{3,}", track_id):
@@ -709,6 +756,7 @@ def run_job(jid, source):
                 processed += 1
                 timestamp = (frame_index - 1) / meta["fps"]
                 boxes, candidates = analyzer.update(boxes, frame_index, timestamp, w, h, frame=frame)
+                save_event_owner_photos(jid,candidates,frame,frame_index,source)
                 annotated = draw_scene(frame.copy(), boxes, candidates)
                 for box in boxes:
                     if box.get("class_id") == 0:

@@ -9,6 +9,13 @@ def near_feet(bag, person):
     return abs(bag[3]-person[3])/height<=.14 and (bag[1]+bag[3])/2>=person[1]+.78*height
 
 
+def usable_body(bag, person, reference=None):
+    if not person or bag is None:return True
+    height=max(1,person[3]-person[1])
+    if bag[3]-bag[1]>.85*height:return False
+    return reference is None or .6<=height/max(1,reference[3]-reference[1])<=1.7
+
+
 def acquisition_motion(origin, position, person_origin, person_box, diagonal, movement_ratio=.012):
     dx,dy=position[0]-origin[0],position[1]-origin[1]
     length=math.hypot(dx,dy)
@@ -58,6 +65,7 @@ class HandoffEvidence:
     def update(self, owners, position, timestamp, frame_index, diagonal, bag_box=None):
         p=self.policy
         eligible=sorted((o for o in owners if o.get('present') and not o.get('association_ambiguous')
+                         and usable_body(bag_box,o.get('bbox'))
                          and o.get('contact_score',0)>=p.minimum_contact and o.get('probability',0)>=p.minimum_score),
                         key=lambda o:-o['probability'])
         if self.anchor and timestamp-self.anchor['last_time']>p.transition_seconds:
@@ -74,14 +82,19 @@ class HandoffEvidence:
         phase['frames']+=1
         phase['last_time']=timestamp
         if self.anchor and self.anchor['person_id']==best['person_id']:
-            self.anchor.update(last_time=timestamp,position=position,frames=phase['frames'])
+            self.anchor.update(last_time=timestamp,position=position,frames=phase['frames'],person_box=best.get('bbox'),
+                               frame=frame_index,score=best['probability'])
             return None
         if not self.anchor:
             if phase['frames']>=p.source_frames and timestamp-phase['start']+1e-6>=p.source_seconds:
                 self.anchor={'person_id':best['person_id'],'frames':phase['frames'],
-                             'last_time':timestamp,'position':position}
+                             'last_time':timestamp,'position':position,'person_box':best.get('bbox'),
+                             'frame':frame_index,'score':best['probability']}
             return None
         previous=next((o for o in owners if o['person_id']==self.anchor['person_id'] and o.get('present')),None)
+        if previous and not usable_body(bag_box,previous.get('bbox'),self.anchor.get('person_box')):
+            self.phase=None
+            return None  # A collapsed/head-only box is not evidence of release.
         # A vanished source may just have received a new tracking ID. Require
         # observations of both people near the package before reporting a transfer.
         if previous is not None:
@@ -97,7 +110,10 @@ class HandoffEvidence:
             return None
         event={'from':self.anchor['person_id'],'to':best['person_id'],'time':round(timestamp,3),
                'frame':frame_index,'source_frames':self.anchor['frames'],'destination_frames':phase['frames'],
+               'from_bbox':self.anchor.get('person_box'),'from_frame':self.anchor.get('frame'),'from_score':self.anchor.get('score'),
+               'to_bbox':best.get('bbox'),'to_frame':frame_index,'to_score':best['probability'],
                'type':'suspected_handoff','requires_review':True}
         self.last_acquisition=event
-        self.anchor={'person_id':best['person_id'],'frames':phase['frames'],'last_time':timestamp,'position':position}
+        self.anchor={'person_id':best['person_id'],'frames':phase['frames'],'last_time':timestamp,'position':position,'person_box':best.get('bbox'),
+                     'frame':frame_index,'score':best['probability']}
         return event

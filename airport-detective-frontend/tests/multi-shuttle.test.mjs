@@ -37,6 +37,52 @@ const state = (number, overrides = {}) => ({ trip_id: `T-${number}`, shuttle_id:
   cameras: [], alerts: [], status: 'idle', model: 'yolov10n.pt', ready: true, ...overrides });
 const response = data => ({ ok: true, json: async () => data });
 
+test('fast preview refreshes only selected camera without polling fleet archives', async () => {
+  const {context,run}=setup();
+  context.fixture=state('01',{cameras:[1,2].map(id=>({id,job_id:`job${id}`,status:'running',preview_version:1}))});
+  context.loads=[];
+  run('liveState=fixture; activeCameraId=2; loadLivePreview=async camera=>loads.push(camera.id)');
+  context.fetch=async url=>{
+    assert.equal(url,'/api/shuttles/01/preview-state');
+    return response({trip_id:'T-01',cameras:[1,2].map(id=>({id,job_id:`job${id}`,status:'running',preview_version:5}))});
+  };
+  await run('pollLivePreview()');
+  assert.deepEqual(context.loads,[2]);
+  assert.equal(run('liveState.cameras[1].preview_version'),5);
+});
+
+test('fast preview ignores late vehicle responses and cleared or replaced jobs', async () => {
+  const {context,run}=setup();
+  context.fixture=state('01',{cameras:[{id:1,job_id:'job1',status:'running',preview_version:1}]});
+  context.loads=[];
+  run('liveState=fixture;activeCameraId=1;loadLivePreview=async camera=>loads.push(camera.id)');
+  let finish;
+  context.fetch=()=>new Promise(resolve=>{finish=resolve;});
+  const pending=run('pollLivePreview()');
+  run('activeTrip={id:"T-02"}');
+  finish(response({trip_id:'T-01',cameras:[{id:1,job_id:'job1',status:'running',preview_version:8}]}));
+  await pending;
+  assert.deepEqual(context.loads,[]);
+  run('activeTrip={id:"T-01"}');
+  for (const fresh of [{job_id:'new-job'}, {job_id:'job1',archive_cleared:true}]) {
+    context.fetch=async()=>response({trip_id:'T-01',cameras:[{id:1,status:'running',preview_version:9,...fresh}]});
+    await run('pollLivePreview()');
+  }
+  assert.deepEqual(context.loads,[]);
+});
+
+test('hidden pages skip fast requests and slow fleet snapshots cannot roll versions back', async () => {
+  const {context,run}=setup();
+  context.fixture=state('01',{cameras:[{id:1,job_id:'job1',status:'running',preview_version:9}]});
+  run('liveState=fixture;liveStates.set("T-01",fixture);document.hidden=true;loadLivePreview=async()=>{}');
+  context.fetch=async()=>{throw new Error('Hidden page must not poll');};
+  await run('pollLivePreview()');
+  run('document.hidden=false');
+  context.fetch=async()=>response({shuttles:[state('01',{cameras:[{id:1,job_id:'job1',status:'running',preview_version:3}]})]});
+  await run('pollLiveState()');
+  assert.equal(run('liveState.cameras[0].preview_version'),9);
+});
+
 test('zero to three connected sources leave the remaining thumbnails and main window disconnected', () => {
   for (let count = 0; count < 4; count++) {
     const { context, node, run } = setup();

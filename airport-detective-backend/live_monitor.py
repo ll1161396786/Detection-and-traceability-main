@@ -88,10 +88,11 @@ class ShuttleMonitor:
                     if record.get("warning_level") not in {"confirmed", "suspected"}:
                         continue
                     alerts.append({**record, "key": f"{job['id']}:{record['id']}",
+                                   'association_snapshot_available':'event_owners' in record,
                                    "job_id": job["id"], "camera_id": camera["id"],
                                    "package_photo": f"/api/jobs/{job['id']}/crops/{record.get('event_crop', record['crop'])}",
-                                   "owners": [{**owner, "photo": self.s.person_photo_url(job['id'],owner['person_id'])}
-                                              for owner in record.get("owners", [])]})
+                                   "owners": [{**owner, "photo": self.s.owner_photo_url(job['id'],owner)}
+                                              for owner in record.get('event_owners',record.get("owners", []))]})
             session["alerts"] = sorted(alerts, key=lambda a: (a["warning_level"] != "confirmed", a["camera_id"], a["id"]))
             return session
 
@@ -121,7 +122,8 @@ class ShuttleMonitor:
                 for child in ("crops", "people"):
                     (folder / child).mkdir(parents=True, exist_ok=True)
                 opts = {"model": model, "device": "auto", "confidence": .25,
-                        "imgsz": "source", "scope": "luggage", "stride": 1, "linger_seconds": 3}
+                        "imgsz": "source", "scope": "luggage", "stride": 1, "linger_seconds": 3,
+                        "render_preview": False}
                 source_stat = sources[i-1].stat()
                 self.s.jobs[jid] = {"id": jid, "created": self.session["created"], "source": {"name": sources[i-1].name, **meta,
                                    "video_path": sources[i-1].relative_to(self.s.VIDEOS).as_posix(),
@@ -172,6 +174,7 @@ class ShuttleMonitor:
                     now = time.monotonic()
                     if now < stream["next_due"]:
                         continue
+                    stream['frame_started'] = now
                     try:
                         ok, frame = stream["cap"].read()
                         if not ok:
@@ -193,6 +196,8 @@ class ShuttleMonitor:
                         evidence_time = timestamp + (stream["cycle"] - 1) * job["source"]["duration"]
                         boxes, candidates = stream["analyzer"].update(boxes, stream["frame"], evidence_time, w, h, frame=frame)
                         folder = self.s.DATA / "jobs" / jid
+                        self.s.save_event_owner_photos(jid,candidates,frame,stream['frame'],
+                                                      self.s.VIDEOS/job['source']['video_path'])
                         for candidate in candidates:
                             candidate['cycle']=stream['cycle']
                             if candidate.get("alarm_frame"):
@@ -209,25 +214,25 @@ class ShuttleMonitor:
                             with self.s.lock:
                                 self.s.save_local_archive(jid, candidates)
                         now = time.monotonic()
-                        if now - stream["published"] >= .25:
-                            # Confirmation changes the live bounding box to red as well.
-                            with self.s.lock:
-                                archive_path = folder / "archive.json"
-                                levels = {c["id"]: c.get("warning_level", "none") for c in json.loads(archive_path.read_text(encoding="utf-8"))} if archive_path.exists() else {}
-                                drawn = [{**c, "warning_level": levels.get(c["id"], c.get("warning_level", "none"))} for c in candidates]
-                                annotated = draw_scene(frame.copy(), boxes, drawn)
-                                scale = min(1., LIVE_PREVIEW_MAX_EDGE / max(w, h))
-                                if scale < 1:
-                                    annotated = cv2.resize(annotated, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_AREA)
-                                self.s.write_jpeg(folder / "preview.jpg", annotated, quality=LIVE_PREVIEW_JPEG_QUALITY)
-                                self.s.update(jid, frame=stream["frame"], processed=stream["processed"], time=round(timestamp, 2),
-                                              cycle=stream["cycle"], preview_version=stream["processed"],
-                                              progress=round(100*stream["frame"]/max(1, job["source"]["frames"]), 1),
-                                              boxes=boxes, current_count=len(boxes), output_width=w, output_height=h,
-                                              elapsed=round(now-started, 1), inference_fps=round(stream["processed"]/max(.001, now-started), 1),
-                                              luggage_candidates=candidates, candidate_summary=stream["analyzer"].summary())
-                            stream["published"] = now
-                        stream["next_due"] = now + 1 / min(10, job["source"]["fps"])
+                        # Publish every inferred frame; confirmation remains authoritative.
+                        with self.s.lock:
+                            archive_path = folder / "archive.json"
+                            levels = {c["id"]: c.get("warning_level", "none") for c in json.loads(archive_path.read_text(encoding="utf-8"))} if archive_path.exists() else {}
+                            drawn = [{**c, "warning_level": levels.get(c["id"], c.get("warning_level", "none"))} for c in candidates]
+                            annotated = draw_scene(frame.copy(), boxes, drawn)
+                            scale = min(1., LIVE_PREVIEW_MAX_EDGE / max(w, h))
+                            if scale < 1:
+                                annotated = cv2.resize(annotated, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_AREA)
+                            self.s.write_jpeg(folder / "preview.jpg", annotated, quality=LIVE_PREVIEW_JPEG_QUALITY)
+                            self.s.update(jid, frame=stream["frame"], processed=stream["processed"], time=round(timestamp, 2),
+                                          cycle=stream["cycle"], preview_version=stream["processed"],
+                                          progress=round(100*stream["frame"]/max(1, job["source"]["frames"]), 1),
+                                          boxes=boxes, current_count=len(boxes), output_width=w, output_height=h,
+                                          elapsed=round(now-started, 1), inference_fps=round(stream["processed"]/max(.001, now-started), 1),
+                                          luggage_candidates=candidates, candidate_summary=stream["analyzer"].summary())
+                        # Include inference time in pacing; do not add a 100 ms delay
+                        # after the GPU has already spent time processing this frame.
+                        stream["next_due"] = stream.get("frame_started", now) + 1 / min(30, job["source"]["fps"])
                     except Exception as exc:
                         logging.exception("Camera %s failed", jid)
                         stream["failed"] = True
@@ -323,6 +328,22 @@ def register(server):
         return jsonify(fleet.describe(shuttle_id)), 202
     server.app.add_url_rule("/api/shuttles", "shuttles", lambda: jsonify(fleet.states()))
     server.app.add_url_rule("/api/shuttles/<shuttle_id>/state", "shuttle_state", lambda shuttle_id: jsonify(fleet.describe(shuttle_id)))
+    def preview_state(shuttle_id):
+        monitor = fleet.get(shuttle_id)
+        # This fast path reads only current versions in memory, never archives,
+        # source metadata, person photos or the complete fleet.
+        with monitor.guard, server.lock:
+            cameras = []
+            for camera in (monitor.session or {}).get('cameras', []):
+                job = server.jobs.get(camera['job_id'])
+                if job:
+                    cameras.append({'id': camera['id'], 'job_id': job['id'],
+                                    'preview_version': job.get('preview_version', 0),
+                                    'status': job['status'], 'archive_cleared': job.get('archive_cleared', False)})
+        response = jsonify(trip_id=f'T-{monitor.number}', cameras=cameras)
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+    server.app.add_url_rule('/api/shuttles/<shuttle_id>/preview-state', 'shuttle_preview_state', preview_state)
     server.app.add_url_rule("/api/shuttles/<shuttle_id>/start", "shuttle_start", start, methods=["POST"])
     def stop(shuttle_id):
         fleet.get(shuttle_id).stop()

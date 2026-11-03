@@ -6,8 +6,10 @@ analysis; its probabilities are association scores, not trained probabilities.
 import math
 from collections import defaultdict, deque
 from tracking import assign_tracks, contact
-from handoff import HandoffEvidence, near_feet, acquisition_motion
+from handoff import HandoffEvidence, near_feet, acquisition_motion, usable_body
 from placement import PlacementEvidence
+from event_owners import snapshot as event_owner_snapshot
+import copy
 
 
 LUGGAGE_CLASSES = {24, 26, 28}  # backpack, handbag, suitcase in COCO
@@ -160,6 +162,11 @@ class SceneAnalyzer:
                     evidence["near"] += 1
                     evidence["proximity"] += proximity
 
+        for item in current_luggage:
+            if not item['package_confirmed']:
+                observers=[{'person_id':p['id'],'present':True,'bbox':p['bbox'],
+                            'contact_score':contact(item['bbox'],p['bbox'])} for p in current_people]
+                item['placement_evidence'].observe_floor(observers,item['bbox'],timestamp,frame_index)
         candidates = [self._candidate(t, frame_index, timestamp, diagonal) for t in current_luggage if t["package_confirmed"]]
         candidates.sort(key=lambda c: ({"疑似遗留": 0, "持续观察": 1, "随身携带": 2}[c["state"]], -c["stationary_seconds"], c["id"]))
         return boxes, candidates
@@ -194,12 +201,16 @@ class SceneAnalyzer:
                 item['red_latched']=False
         else:
             item['carried_since']=None
-        suspected=item['handoff_evidence'].update(owners,item['center'],timestamp,frame_index,diagonal,bag_box=item['bbox'])
+        placement=item['placement_evidence'].update(owners,item['bbox'],timestamp,frame_index,diagonal,stationary,
+                                                   handoff=item['handoff_evidence'].acquired(item['current_owner_id'],timestamp))
+        suspected=None if placement else item['handoff_evidence'].update(owners,item['center'],timestamp,frame_index,diagonal,bag_box=item['bbox'])
         # Ambiguous near-equal candidates do not establish a new holder.
         proposed = best["person_id"] if best and not best["association_ambiguous"] and (len(eligible)==1 or best["probability"]-eligible[1]["probability"]>=.10) else None
         current=next((o for o in eligible if o["person_id"]==item["current_owner_id"]),None)
         if current:
             item["owner_last_near"]=timestamp
+            if not current['association_ambiguous'] and usable_body(item['bbox'],current['bbox']):
+                item['bound_observation']={'bbox':list(current['bbox']),'frame':frame_index,'score':current['probability']}
         if current and best and best["probability"]-current["probability"]<.15:
             proposed=item["current_owner_id"]
         if proposed and proposed == item["pending_owner_id"]:
@@ -215,7 +226,10 @@ class SceneAnalyzer:
         # Require release of the incumbent plus sustained acquisition and package
         # motion. Mere proximity or a stationary-bag bystander cannot cause a handoff.
         released=not current or best and best["probability"]-current["probability"]>=.18
-        if proposed and any(o['person_id']==item['current_owner_id'] and o['present'] for o in owners):
+        source_observation=next((o for o in owners if o['person_id']==item['current_owner_id'] and o['present']),None)
+        if source_observation and not usable_body(item['bbox'],source_observation['bbox']):
+            item['pending_both_seen']=False
+        elif proposed and source_observation:
             item['pending_both_seen']=True
         acquisition_geometry=bool(best and not near_feet(item['bbox'],best['bbox'])
                                   and acquisition_motion(item['pending_origin'],item['center'],item.get('pending_person_origin'),best['bbox'],diagonal,.008))
@@ -228,7 +242,7 @@ class SceneAnalyzer:
                         and item.get('pending_both_seen') and acquisition_geometry)
         stable=item["owner_streak"] >= (TRANSFER_STABLE_FRAMES if is_transfer else OWNER_STABLE_FRAMES)
         duration=timestamp-item["pending_since"] >= (.45 if is_transfer else .16)
-        if proposed and stable and duration and (not is_transfer or transfer_ready) and proposed != item["current_owner_id"]:
+        if proposed and stable and duration and (not is_transfer or transfer_ready and not placement) and proposed != item["current_owner_id"]:
             old_owner = item["current_owner_id"]
             item["current_owner_id"] = proposed
             if item["first_owner_id"] is None:
@@ -236,7 +250,10 @@ class SceneAnalyzer:
             if proposed not in item["owner_history"]:
                 item["owner_history"].append(proposed)
             if old_owner:
-                item["transfers"].append({"from": old_owner, "to": proposed, "frame": frame_index, "time": round(timestamp, 3)})
+                observation=item.get('bound_observation',{})
+                item["transfers"].append({"from": old_owner, "to": proposed, "frame": frame_index, "time": round(timestamp, 3),
+                                          'from_bbox':observation.get('bbox'),'from_frame':observation.get('frame'),'from_score':observation.get('score'),
+                                          'to_bbox':list(best['bbox']),'to_frame':frame_index,'to_score':best['probability']})
                 already_warned=any(event['from']==old_owner and event['to']==proposed and abs(timestamp-event['time'])<2
                                    for event in item['suspected_transfers'])
                 if not already_warned:
@@ -250,15 +267,18 @@ class SceneAnalyzer:
             item["event_warning_level"]="suspected"
             item['event_type']='suspected_handoff'
             item.update(alarm_frame=frame_index,alarm_time=timestamp)
-        placement=item['placement_evidence'].update(owners,item['bbox'],timestamp,frame_index,diagonal,stationary,
-                                                   handoff=bool(suspected or item['handoff_evidence'].acquired(item['current_owner_id'],timestamp)))
         if placement and not item['red_latched']:
             item['placement_events'].append(placement)
             item['alarm_revision']+=1
             item['event_warning_level']='suspected'
             item['event_type']='suspected_left_behind'
             item.update(alarm_frame=frame_index,alarm_time=timestamp)
-        abandoned = stationary >= self.linger_seconds and not eligible and timestamp-item["owner_last_near"]>.75 and item["scores"][-1]>=.2
+        nearby_person=any(o['present'] and o['contact_score']>=.5 for o in owners)
+        recently_occluded=any(person['class_id']==0 and person['last_frame']!=frame_index
+                             and 0<=timestamp-person['last_time']<=2.
+                             and contact(item['bbox'],person['bbox'])>=.5 for person in self.tracks.values())
+        abandoned = (stationary >= self.linger_seconds and not eligible and not nearby_person and not recently_occluded
+                     and timestamp-item["owner_last_near"]>.75 and item["scores"][-1]>=.2)
         item["abandoned_streak"] = item["abandoned_streak"] + 1 if abandoned else 0
         if item["abandoned_streak"] == ABANDONED_RED_FRAMES and not item['red_latched']:
             item['red_latched']=True
@@ -295,6 +315,14 @@ class SceneAnalyzer:
         candidate['placement_events']=list(item['placement_events'])
         candidate['placement_requires_review']=item['event_type']=='suspected_left_behind'
         candidate['recent_owner_id']=item['current_owner_id'] or (item['placement_evidence'].source or {}).get('id')
+        # Display recent association evidence independently of a formal holder
+        # binding: a historical holder must not pin the wrong photo to the top.
+        if (best and not best['association_ambiguous'] and best['probability']>=.65
+                and (len(eligible)==1 or best['probability']-eligible[1]['probability']>=.08)):
+            candidate['recent_owner_id']=best['person_id']
+        if (item['event_type']=='suspected_left_behind' and item['placement_events']
+                and item['placement_events'][-1]['reason_code']=='floor_then_pickup'):
+            candidate['recent_owner_id']=item['placement_events'][-1]['person_id'] or candidate['recent_owner_id']
         candidate["suspected_transfers"]=list(item["suspected_transfers"])
         candidate["suspected_transfer_count"]=len(item["suspected_transfers"])
         candidate["handoff_requires_review"]=bool(item["suspected_transfers"] and (not item["transfers"]
@@ -317,7 +345,9 @@ class SceneAnalyzer:
             candidate["reason"] = "已记录连续5帧遗留红警；当前画面已变化，保留警报档案供复核"
         elif item['event_type']=='suspected_left_behind':
             event=item['placement_events'][-1]
-            candidate['reason']=('疑似行李遗落：观察到包裹下移至脚边并减速停留，疑似放置；人员可能仍在附近，是否遗留需人工复核'
+            candidate['reason']=('疑似行李遗落：观察到包裹在脚边停留、人员弯腰接近后又拾起；属于落地接触待复核，不代表确认遗留或转交'
+                                 if event['reason_code']=='floor_then_pickup' else
+                                 '疑似行李遗落：观察到包裹下移至脚边并减速停留，疑似放置；人员可能仍在附近，是否遗留需人工复核'
                                  if event['reason_code']=='placed_pending_review' else
                                  '疑似行李遗落：观察到行李下移至脚边、停留，原关联人随后离开或持续失去联系；需人工复核'
                                  if event['reason_code']=='placed_then_left' else
@@ -332,8 +362,18 @@ class SceneAnalyzer:
             owner["is_first_owner"] = owner["person_id"] == item["first_owner_id"]
             owner["is_current_owner"] = owner["person_id"] == item["current_owner_id"]
             owner['is_recent_owner']=owner['person_id']==candidate['recent_owner_id']
-        owners.sort(key=lambda owner: (not owner["is_current_owner"], not owner["is_first_owner"], -owner["probability"]))
+        # Absent, unrelated tracks are not current candidates. Keep only a
+        # historical holder/source when it is relevant to this package.
+        owners=[owner for owner in owners if (owner['present'] and owner['probability']>=.45)
+                or owner['person_id'] in {candidate['recent_owner_id'],item['current_owner_id']}]
+        owners.sort(key=lambda owner: (not owner['is_recent_owner'], not owner['present'], -owner["probability"]))
         candidate["owners"] = owners[:3]
+        if candidate.get('alarm_frame'):
+            if item.get('event_owner_revision')!=item['alarm_revision']:
+                item['event_owners']=event_owner_snapshot(candidate)
+                item['event_owner_revision']=item['alarm_revision']
+            candidate['event_owners']=copy.deepcopy(item.get('event_owners',[]))
+            candidate['event_owner_revision']=item['alarm_revision']
         self.luggage_history[item["id"]] = candidate
         return candidate
 

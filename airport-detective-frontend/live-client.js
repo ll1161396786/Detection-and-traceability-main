@@ -5,6 +5,7 @@ let liveSelectedKey = null;
 const livePictures = new Map();
 const livePreviewRequests = new Map();
 let livePollBusy = false;
+let liveFastPreviewBusy = false;
 let liveControlBusy = false;
 let liveClearBusy = false;
 let liveModelInitialized = false;
@@ -191,17 +192,20 @@ function renderLiveItems() {
           <p class="item-name">${escapeHtml(item.label_zh)}</p>
           <span class="row-sub">${escapeHtml(activeTrip.no)} · 静止 ${item.stationary_seconds}s</span>
           <p class="live-reason" title="${escapeHtml(livePublicReason(item))}">${escapeHtml(livePublicReason(item))}</p>
+          ${item.association_snapshot_available === false ? '<p class="live-reason">旧事件关联未固定，请启动新检测核对</p>' : ''}
           <div class="item-evidence-actions"><button type="button" data-replay-item>▶ 事件回放</button><button type="button" data-item-photo>放大照片</button></div>
           <button class="live-confirm" type="button" data-confirm-job="${item.job_id}" data-confirm-item="${item.id}" data-confirmed="${!isConfirmed}">${isConfirmed ? "撤销红警" : "人工确认遗留"}</button>
         </div></div>
       <div class="owner-list">${item.owners.length ? item.owners.slice(0, 3).map(owner => `
-        <div class="owner-card" title="关联证据，需人工复核"><img class="owner-avatar" src="${owner.photo}" alt="CAM-${item.camera_id} ${liveOwnerLabel(owner)}照片" data-target-hint="${liveOwnerPhotoHint(owner)}" loading="lazy" tabindex="0" role="button" aria-haspopup="dialog" title="点击放大照片 · ${liveOwnerPhotoHint(owner)}" />
-          <div class="owner-body"><div class="owner-top"><strong>${liveOwnerLabel(owner)}</strong><span class="owner-score">${Math.round(owner.probability * 100)}%</span></div><span class="owner-name">关联分数 · 待复核</span><span class="owner-name">${liveOwnerPhotoHint(owner)}</span></div></div>`).join("") : '<span class="live-empty-owner">暂无所属人关联证据</span>'}</div>
+        <div class="owner-card" title="关联证据，需人工复核">${owner.photo ? `<img class="owner-avatar" src="${owner.photo}" alt="CAM-${item.camera_id} ${liveOwnerLabel(owner)}照片" data-target-hint="${liveOwnerPhotoHint(owner)}" loading="lazy" tabindex="0" role="button" aria-haspopup="dialog" title="点击放大照片 · ${liveOwnerPhotoHint(owner)}" />` : '<span class="live-empty-owner">暂无可靠截图</span>'}
+          <div class="owner-body"><div class="owner-top"><strong>${liveOwnerLabel(owner)}</strong><span class="owner-score">${Number.isFinite(owner.probability) ? Math.round(owner.probability * 100) + '%' : '待复核'}</span></div><span class="owner-name">关联证据 · 待复核</span><span class="owner-name">${owner.photo ? liveOwnerPhotoHint(owner) : '不使用其他时刻照片替代'}</span></div></div>`).join("") : '<span class="live-empty-owner">暂无可靠的事件关联人证据</span>'}</div>
     </article>`;
   }).join("") : `<p class="live-empty">${liveConnectionError ? "后端连接中断，等待恢复" : "暂无遗留物警报"}</p>`;
 }
 
 function liveOwnerLabel(owner) {
+  const roles={handoff_source:'转交前关联人',handoff_recipient:'转交后关联人',placement_actor:'放置/拾起关联人',last_associated:'事发前关联人',association_uncertain:'关联身份待复核'};
+  if (roles[owner.event_role]) return roles[owner.event_role];
   return owner.is_current_owner || owner.is_recent_owner ? '最近关联人' : '候选关联人';
 }
 
@@ -266,6 +270,10 @@ async function pollLiveState() {
   try {
     const fleet = await monitorApi("/api/shuttles");
     for (const state of fleet.shuttles) {
+      for (const camera of state.cameras || []) {
+        const previous = liveStates.get(state.trip_id)?.cameras.find(c => c.job_id === camera.job_id);
+        if (previous) camera.preview_version = Math.max(camera.preview_version || 0, previous.preview_version || 0);
+      }
       liveStates.set(state.trip_id, state);
       if (!trips.some(trip => trip.id === state.trip_id)) {
         const number = state.shuttle_id;
@@ -290,6 +298,26 @@ async function pollLiveState() {
     if (isLiveTrip(activeTrip)) { updateLiveStatus(); renderLiveItems(); }
     renderTrips();
   }
+}
+
+async function pollLivePreview() {
+  if (liveFastPreviewBusy || liveClearBusy || liveControlBusy || document.hidden || !isLiveTrip(activeTrip) ||
+      !liveState.cameras.some(c => c.status === 'running')) return;
+  const tripId = activeTrip.id;
+  liveFastPreviewBusy = true;
+  try {
+    const response = await fetch(monitorPath('preview-state'), {cache:'no-store', signal:AbortSignal.timeout(2500)});
+    if (!response.ok) return;
+    const state = await response.json();
+    if (activeTrip.id !== tripId || state.trip_id !== tripId || liveClearBusy || liveControlBusy) return;
+    for (const fresh of state.cameras) {
+      const camera = liveCameraFor(fresh.id);
+      if (!camera || camera.job_id !== fresh.job_id || fresh.archive_cleared || camera.archive_cleared || fresh.status !== 'running') continue;
+      camera.preview_version = Math.max(camera.preview_version || 0, fresh.preview_version || 0);
+      if (fresh.id === activeCameraId) void loadLivePreview(camera);
+    }
+  } catch (_) { /* The normal state poll owns connection messages and retry. */ }
+  finally { liveFastPreviewBusy = false; }
 }
 
 async function controlLiveMonitor(action) {
@@ -381,6 +409,7 @@ async function initializeLiveMonitor() {
   await pollLiveState();
   // Input folders may be empty on a new installation; start explicitly after configuration.
   setInterval(() => { void pollLiveState(); }, 600);
+  setInterval(() => { void pollLivePreview(); }, 75);
 }
 
 function initializeItemPhotoPreview() {

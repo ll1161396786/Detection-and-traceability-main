@@ -73,6 +73,62 @@ class LiveMonitorTest(unittest.TestCase):
         self.assertEqual(recovered["id"], started["id"])
         self.assertEqual(recovered["status"], "stopped")
 
+    def test_fast_preview_state_reads_versions_without_archive_scan(self):
+        monitor=server.monitor.get('03')
+        monitor.session={'cameras':[{'id':1,'job_id':'fast-job'}]}
+        server.jobs['fast-job']={'id':'fast-job','status':'running','preview_version':18}
+        with patch.object(server.monitor,'describe',side_effect=AssertionError('No archive scan')):
+            result=self.client.get('/api/shuttles/03/preview-state')
+        self.assertEqual(result.status_code,200)
+        self.assertEqual(result.headers['Cache-Control'],'no-store')
+        data=result.get_json()
+        self.assertEqual(data['trip_id'],'T-03')
+        self.assertEqual(data['cameras'][0]['preview_version'],18)
+        self.assertEqual(self.client.get('/api/shuttles/02/preview-state').get_json()['cameras'],[])
+        server.jobs['fast-job']['archive_cleared']=True
+        self.assertTrue(self.client.get('/api/shuttles/03/preview-state').get_json()['cameras'][0]['archive_cleared'])
+
+    def test_archive_candidates_use_current_scores_and_drop_stale_bystanders(self):
+        jid='candidate-test'
+        folder=self.data/'jobs'/jid;folder.mkdir(parents=True)
+        server.jobs[jid]={'source':{}}
+        def person(pid,score):return {'person_id':pid,'probability':score,'present':True,'contact_score':score}
+        base={'id':'L001','stationary_seconds':1,'first_owner_id':'P001','current_owner_id':'P001',
+              'recent_owner_id':'P002','owners':[person('P001',.95),person('P002',.6),person('P003',.9)]}
+        server.save_local_archive(jid,[base])
+        server.save_local_archive(jid,[{**base,'owners':[person('P001',.2),person('P002',.85)]}])
+        saved=json.loads((folder/'archive.json').read_text(encoding='utf-8'))[0]
+        self.assertEqual([o['person_id'] for o in saved['owners']],['P002','P001'])
+        self.assertEqual(saved['owners'][1]['probability'],.2)
+
+    def test_every_processed_frame_is_published_without_four_fps_gate(self):
+        import numpy as np
+        folder=self.videos/'04';folder.mkdir()
+        writer=cv2.VideoWriter(str(folder/'synthetic.mp4'),cv2.VideoWriter_fourcc(*'mp4v'),25,(320,180))
+        self.assertTrue(writer.isOpened())
+        for _ in range(30):writer.write(np.zeros((180,320,3),np.uint8))
+        writer.release()
+        calls=[]
+        original=server.write_jpeg
+        def publish(path,frame,**kwargs):
+            original(path,frame,**kwargs)
+            if path.name=='preview.jpg':
+                calls.append(time.monotonic())
+                if len(calls)>=12:self.monitor.stop_event.set()
+        with patch('live_monitor.Detector.load',return_value='cpu'), \
+             patch('live_monitor.Detector.predict',side_effect=lambda frame,options,device:(frame,[])), \
+             patch.object(server,'write_jpeg',side_effect=publish):
+            self.monitor.start()
+            self.monitor.worker.join(10)
+        self.assertFalse(self.monitor.worker.is_alive())
+        job=server.jobs[self.monitor.session['cameras'][0]['job_id']]
+        self.assertEqual(job['processed'],12)
+        self.assertEqual(job['frame'],12)
+        self.assertEqual(job['preview_version'],12)
+        elapsed=calls[-1]-calls[0]
+        self.assertLess(elapsed,2.0,'Old 4 FPS gate requires at least 2.75 seconds')
+        print(f'\nSynthetic preview transport: {11/max(.001,elapsed):.1f} FPS; fake detector, no GPU accuracy claim')
+
     def test_alert_filter_confirmation_persistence_and_camera_identity(self):
         cameras = []
         for i in (1, 2):

@@ -13,6 +13,118 @@ def owner(pid='P001',contact=.95,bbox=(100,0,260,400)):
 
 
 class EventStabilityTest(unittest.TestCase):
+    def test_source_body_collapsing_to_head_is_not_release_or_handoff(self):
+        evidence=HandoffEvidence()
+        for i in range(6):
+            evidence.update([owner()],(230,250),i*.1,i+1,1000,bag_box=[210,220,250,280])
+        for i in range(6,16):
+            source=owner(contact=.2,bbox=(100,0,180,100))
+            destination=owner('P002',bbox=(200,0,400,400))
+            self.assertIsNone(evidence.update([source,destination],(230+(i-6)*6,250),i*.1,i+1,1000,
+                                             bag_box=[210+(i-6)*6,220,250+(i-6)*6,280]))
+
+    def test_weak_floor_package_recovers_and_pickup_warns_only_after_confirmation(self):
+        analyzer=SceneAnalyzer(30);identity=None;events=[]
+        for i in range(8):
+            _,items=analyzer.update([box(0,(100,0,400,400)),box(24,(280,260,360,340),.14)],i+1,i*.04,1000,600)
+            self.assertEqual(items,[])
+            identity=next(t['id'] for t in analyzer.tracks.values() if t['class_id']==24)
+        for i in range(8,26):analyzer.update([box(0,(100,0,400,400))],i+1,i*.04,1000,600)
+        for i in range(26,31):
+            _,items=analyzer.update([box(0,(100,0,400,400)),box(24,(280,210,360,290),.9)],i+1,i*.04,1000,600)
+            for item in items:
+                self.assertEqual(item['id'],identity)
+                if item['placement_events']:events=item['placement_events']
+        self.assertEqual(len(events),1)
+        self.assertEqual(events[0]['reason_code'],'floor_then_pickup')
+
+    def test_bending_beside_stationary_floor_bag_is_not_itself_a_pickup(self):
+        evidence=PlacementEvidence()
+        for i in range(40):
+            person=owner(bbox=(100,0,400,400))
+            self.assertIsNone(evidence.update([person],[280,260,360,340],i*.04,i+1,1000,0))
+
+    def test_walking_body_and_bag_up_together_are_not_floor_pickup(self):
+        evidence=PlacementEvidence()
+        for i in range(30):
+            dy=0 if i<8 else min(60,(i-7)*8)
+            person=owner(bbox=(100,-dy,400,400-dy))
+            self.assertIsNone(evidence.update([person],[280,260-dy,360,340-dy],i*.04,i+1,1000,0))
+
+    def test_old_floor_observation_expires_before_unrelated_reappearance(self):
+        evidence=PlacementEvidence()
+        for i in range(8):evidence.update([owner(bbox=(100,0,400,400))],[280,260,360,340],i*.04,i+1,1000,0)
+        for i in range(65,75):
+            self.assertIsNone(evidence.update([owner(bbox=(100,0,400,400))],[280,210,360,290],i*.04,i+1,1000,0))
+
+    def test_bag_reappearing_after_occlusion_is_not_observed_putdown(self):
+        evidence=PlacementEvidence()
+        for i in range(5):evidence.update([owner()],[220,220,260,280],i*.1,i,1000,0)
+        for i in range(16,25):
+            self.assertIsNone(evidence.update([owner()],[220,330,260,390],i*.1,i,1000,0))
+
+    def test_recent_candidate_can_differ_from_old_formally_bound_holder(self):
+        analyzer=SceneAnalyzer(30)
+        people=[box(0,(100,0,260,400)),box(0,(320,0,480,400))]
+        for i in range(5):
+            _,items=analyzer.update(people+[box(24,(420,220,460,280))],i+1,i*.1,1000,600)
+        bag=next(t for t in analyzer.tracks.values() if t['class_id']==24)
+        persons=sorted((t for t in analyzer.tracks.values() if t['class_id']==0),key=lambda t:t['bbox'][0])
+        bag['current_owner_id']=persons[0]['id'];bag['first_owner_id']=persons[0]['id']
+        _,items=analyzer.update(people+[box(24,(420,220,460,280))],6,.5,1000,600)
+        self.assertEqual(items[0]['current_owner_id'],persons[0]['id'])
+        self.assertEqual(items[0]['recent_owner_id'],persons[1]['id'])
+        self.assertEqual(items[0]['owners'][0]['person_id'],persons[1]['id'])
+
+    def test_two_frame_floor_jitter_cannot_create_putdown_event(self):
+        evidence=PlacementEvidence()
+        for i in range(5):evidence.update([owner()],[220,220,260,280],i*.04,i,1000,0)
+        for i in range(5,7):
+            self.assertIsNone(evidence.update([owner()],[220,330,260,390],i*.04,i,1000,0))
+        self.assertIsNone(evidence.update([owner()],[220,220,260,280],.28,7,1000,0))
+
+    def test_ambiguous_near_tie_cannot_supply_carrying_anchor(self):
+        evidence=PlacementEvidence()
+        for i in range(30):
+            person={**owner(),'association_ambiguous':True}
+            y=220 if i<5 else 330
+            other={**person,'person_id':'P002','probability':.94}
+            self.assertIsNone(evidence.update([person,other],[220,y,260,y+60],i*.1,i,1000,0))
+        self.assertIsNone(evidence.source)
+
+    def test_person_occlusion_does_not_create_generic_yellow_or_red(self):
+        evidence=PlacementEvidence();analyzer=SceneAnalyzer(.2)
+        for i in range(30):
+            visible=i<8 or i>=20
+            people=[owner()] if visible else []
+            self.assertIsNone(evidence.update(people,[220,330,260,390],i*.1,i,1000,4))
+            _,items=analyzer.update(([box(0,(100,0,260,400))] if visible else [])+
+                                   [box(24,(220,330,260,390))],i+1,i*.1,1000,600)
+            if items:self.assertEqual(items[0]['warning_level'],'none')
+
+    def test_real_putdown_can_survive_brief_loss_of_source(self):
+        evidence=PlacementEvidence();events=[]
+        for i in range(15):
+            y=220 if i<5 else 330
+            event=evidence.update([owner()] if i<5 or i>=12 else [],[220,y,260,y+60],i*.1,i,1000,0)
+            if event:events.append(event)
+        self.assertEqual(len(events),1)
+        self.assertEqual(events[0]['reason_code'],'placed_pending_review')
+
+    def test_large_detection_box_expansion_is_not_putdown(self):
+        evidence=PlacementEvidence()
+        for i in range(20):
+            bag=[220,220,260,280] if i<5 else [160,220,300,400]
+            self.assertIsNone(evidence.update([owner()],bag,i*.1,i,1000,0))
+
+    def test_generic_unattended_warning_still_occurs_after_occlusion_grace(self):
+        evidence=PlacementEvidence();events=[]
+        for i in range(50):
+            event=evidence.update([owner()] if i<5 else [],[220,330,260,390],i*.1,i,1000,4)
+            if event:events.append(event)
+        self.assertEqual(len(events),1)
+        self.assertGreaterEqual(events[0]['time']-.4,2.)
+
     def test_weak_person_observation_recovers_id_but_cannot_create_one(self):
         analyzer=SceneAnalyzer()
         tracked,_=analyzer.update([box(0,(100,0,200,300),.2)],1,0,1000,600)

@@ -78,7 +78,9 @@ def assign_tracks(boxes, tracks, diagonal, observation, iou, center, frame=None)
                     # A carried bag changes view during a transfer. Recover a
                     # confirmed package only with nearby, overlapping geometry;
                     # clothing histograms must not reject a rotating black bag.
-                    if not track.get('package_confirmed') or overlap<.15 or distance>.065 or not .4<=new_area/old_area<=2.5 or gap>60:
+                    floor=getattr(track.get('placement_evidence'),'floor',None)
+                    floor_supported=bool(floor and floor['count']>=3 and floor['last']-floor['start']>=.12 and gap<=50)
+                    if not (track.get('package_confirmed') or floor_supported) or overlap<.15 or distance>.065 or not .4<=new_area/old_area<=2.5 or gap>60:
                         continue
             costs[i,j]=.45*distance/max(gate,.001)+.25*(1-overlap)+.5*appearance+.015*min(gap-1,12)
             if box['class_id']==0 and box.get('confidence',1.)<box.get('track_birth_confidence',.35):

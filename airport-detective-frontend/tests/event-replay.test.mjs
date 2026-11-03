@@ -76,6 +76,26 @@ test('person photo hint distinguishes marked crops from legacy photos', () => {
   }
 });
 
+test('event participants use distinct roles without implying ownership or showing IDs',()=>{
+  const {run}=setup();
+  assert.equal(run('liveOwnerLabel({event_role:"handoff_source",person_id:"P047"})'),'转交前关联人');
+  assert.equal(run('liveOwnerLabel({event_role:"handoff_recipient"})'),'转交后关联人');
+  assert.equal(run('liveOwnerLabel({event_role:"placement_actor"})'),'放置/拾起关联人');
+  assert.equal(run('liveOwnerLabel({event_role:"association_uncertain"})'),'关联身份待复核');
+});
+
+test('unavailable event portraits show uncertainty without substituting another photo or zero percent',()=>{
+  const {context,run}=setup();
+  context.itemCount={};context.itemList.dataset={};context.escapeHtml=value=>String(value??'');
+  run(`liveState.alerts=[{key:'a',id:'L001',camera_id:1,warning_level:'suspected',association_snapshot_available:true,
+    owners:[{event_role:'placement_actor',photo:null,probability:null,person_id:'P047'}]}];renderLiveItems()`);
+  assert.match(context.itemList.innerHTML,/放置\/拾起关联人/);
+  assert.match(context.itemList.innerHTML,/暂无可靠截图/);
+  assert.doesNotMatch(context.itemList.innerHTML,/0%|P047|src="null"/);
+  run('liveState.alerts[0].association_snapshot_available=false;renderLiveItems()');
+  assert.match(context.itemList.innerHTML,/旧事件关联未固定，请启动新检测核对/);
+});
+
 test('person cards retain hidden IDs and show per-photo target instructions', () => {
   const {context,run}=setup();
   context.itemCount={};

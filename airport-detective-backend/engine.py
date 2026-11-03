@@ -131,6 +131,8 @@ class Detector:
                 continue
             fused.append(box)
         boxes=fused
+        if options.get('render_preview', True) is False:
+            return frame, boxes  # Live monitor draws the final tracked scene once.
         # OpenCV draws English labels reliably without downloading any font.
         annotated = frame.copy()
         for b in boxes:
